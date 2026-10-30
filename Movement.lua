@@ -1,0 +1,2677 @@
+return function(Lib)
+    local Bridge    = Lib.Bridge
+    local CONFIG    = Lib.CONFIG
+    local State     = Lib.State
+
+    local Players    = game:GetService("Players")
+    local RunService = Bridge._RunService or game:GetService("RunService")
+    local UIS        = game:GetService("UserInputService")
+    local Workspace  = game:GetService("Workspace")
+    local LP         = Players.LocalPlayer
+
+    local print = function() end
+
+    local MOV = {
+
+        Speed          = false,
+        SpeedToggleKey = Enum.KeyCode.X,
+        SpeedValue     = 24,
+        SprintKey      = Enum.KeyCode.LeftShift,
+        SprintSpeed    = 42,
+        AutoSprint     = false,
+
+        FlyToggleKey   = Enum.KeyCode.G,
+        FlySpeed       = 28,
+        FlyUpKey       = Enum.KeyCode.Space,
+        FlyDownKey     = Enum.KeyCode.LeftControl,
+        FlyPersist     = true,
+        FlyTPBypass    = true,
+
+        PreserveStateOnDeath = true,
+
+        StraferKey     = Enum.KeyCode.V,
+
+        SpeedStateKey   = Enum.KeyCode.C,
+        SpeedStateOrder = { "Skydiving", "Parachuting", "Proning" },
+
+        LeanLockKey    = Enum.KeyCode.L,
+        LeanLockValue  = 1,
+
+        InvisibleKey     = Enum.KeyCode.U,
+        InvisibleYOffset = -2.8,
+        InvisibleProne   = true,
+        InvisibleLean    = true,
+        InvisibleJitter  = 0,
+
+        FakeAnglesKey      = Enum.KeyCode.J,
+        FakeAnglesJitter   = 2.8,
+        FakeAnglesPitchAmp = 1.4,
+
+        FakeAnglesYaw      = true,
+        FakeAnglesLean     = true,
+        FakeAnglesAimYaw   = false,
+        FakeAnglesPitch    = false,
+
+        FakeAnglesClampSafe = true,
+        FakeAnglesSpinStep = 0.9,
+        FakeAnglesGhost    = true,
+        FakeAnglesGhostTransparency = 0.5,
+        FakeAnglesGhostMaterial = Enum.Material.Glass,
+        FakeAnglesGhostColor    = Color3.fromRGB(120, 200, 255),
+        FakeAnglesGhostOutline  = Color3.fromRGB(180, 235, 255),
+
+        FakeAnglesStateSpoof  = false,
+        FakeAnglesStateCycle  = { "Crouching", "Proning", "Standing" },
+        FakeAnglesStateHold   = 8,
+        FakeAnglesForceState  = nil,
+        FakeAnglesCrouchDrop  = 1.4,
+        FakeAnglesProneDrop   = 2.4,
+        FakeAnglesGhostFirstPersonHide = true,
+
+        FakeAnglesGhostFPZoom = 0.5,
+        FakeAnglesGhostFPDist = 1.5,
+
+        FakeAnglesUnrealValue = 1e18,
+        FakeAnglesUnrealState = 1e9,
+
+        FakeAnglesSender       = false,
+        FakeAnglesSendHz       = 22,
+        FakeAnglesSendBurstCap = 3,
+        FakeAnglesSuppressGame = false,
+
+        FakeAnglesDiag      = false,
+        FakeAnglesDiagKey   = Enum.KeyCode.K,
+        FakeAnglesDiagCount = 20,
+
+        VelocityDesyncKey    = Enum.KeyCode.Y,
+        VelocityDesyncAmp    = 3.0,
+        VelocityDesyncUseVel = true,
+        VelocityDesyncVertical = 0.0,
+
+        NoFallKey       = Enum.KeyCode.B,
+
+        ThirdPersonKey       = Enum.KeyCode.T,
+        ThirdPersonDist      = 16,
+        ThirdPersonMax       = 25,
+        ThirdPersonWheelStep = 1.5,
+        ThirdPersonPinchSens = 10,
+        ThirdPersonMobileGui = true,
+
+        NoClip    = false,
+        NoClipKey = Enum.KeyCode.N,
+
+        InfiniteJump = false,
+        BunnyHop     = false,
+
+        SuperJumpKey = Enum.KeyCode.H,
+        SuperJumpVel = 55,
+
+        SpinBotKey = Enum.KeyCode.Z,
+        SpinBotRPS = 6,
+
+        AntiVoid      = false,
+        AntiVoidY     = -50,
+        AntiVoidSafeY = 50,
+
+        LeanSprint = false,
+        LeanAngle  = 4,
+
+        DiagKey    = Enum.KeyCode.RightBracket,
+        DebugKey   = Enum.KeyCode.LeftBracket,
+
+        DumpNilKey = Enum.KeyCode.O,
+    }
+
+    local function now() return os.clock() end
+    local function getCamera() return Workspace.CurrentCamera end
+
+    local V2_ZERO, V3_ZERO = Vector2.zero, Vector3.zero
+
+    local function isLiveInputActive()
+        if UIS:IsKeyDown(Enum.KeyCode.W) or UIS:IsKeyDown(Enum.KeyCode.A)
+        or UIS:IsKeyDown(Enum.KeyCode.S) or UIS:IsKeyDown(Enum.KeyCode.D) then
+            return true
+        end
+
+        local ok, gp = pcall(UIS.GetGamepadState, UIS, Enum.UserInputType.Gamepad1)
+        if ok and gp then
+            for _, s in ipairs(gp) do
+                if s.KeyCode == Enum.KeyCode.Thumbstick1 and s.Position.Magnitude > 0.15 then
+                    return true
+                end
+            end
+        end
+        if UIS.TouchEnabled then
+            local okT, touches = pcall(UIS.GetTouches, UIS)
+            if okT and touches and #touches > 0 then return true end
+        end
+        return false
+    end
+
+    local liveInputNow = false
+
+    local knownGoodLA = nil
+
+    local activeCtrlRef = nil
+
+    local liveCtrl, liveCtrlT = nil, -999
+    local liveCam,  liveCamT  = nil, -999
+    local LIVE_TTL = 0.5
+
+    local hooksSetup    = false
+    local camHooksSetup = false
+
+    local ctrlCache, findLastT, FIND_CD = nil, -999, 2.5
+    local camCache,  findCamLastT, FIND_CAM_CD = nil, -999, 2.5
+
+    local logBuf = {}
+    local function log(...)
+        local p = {}; for _, v in ipairs({...}) do p[#p+1] = tostring(v) end
+        local line = table.concat(p, "\t"); logBuf[#logBuf+1] = line; print(line)
+    end
+    local function flushLog(f)
+        local c = table.concat(logBuf, "\n")
+        if type(writefile)    == "function" then pcall(writefile,    f, c) end
+        if type(setclipboard) == "function" then pcall(setclipboard, c) end
+        print("[MOV] Диагностика → " .. f); logBuf = {}
+    end
+
+    local function isCtrl(t)
+        if type(t) ~= "table" then return false end
+        if type(rawget(t,"MoveSpeed"))       ~= "number"  then return false end
+        if type(rawget(t,"VelocityGravity")) ~= "number"  then return false end
+        if type(rawget(t,"TrySprinting"))    ~= "boolean" then return false end
+        if type(rawget(t,"IsGrounded"))      ~= "boolean" then return false end
+        if type(rawget(t,"IsSprinting"))     ~= "boolean" then return false end
+        local la = rawget(t, "_localActor")
+        if type(la) ~= "table" then return false end
+
+        local alive = rawget(la, "Alive")
+        if alive == false then return false end
+
+        local ilp = rawget(la, "IsLocalPlayer")
+        if ilp == false then return false end
+
+        local backRef = rawget(la, "Controller")
+        if type(backRef) == "table" and not rawequal(backRef, t) then
+            return false
+        end
+
+        return true
+    end
+
+    local function isCam(t)
+        if type(t) ~= "table" then return false end
+        if rawget(t,"_zoomLimit")   == nil then return false end
+        if rawget(t,"_shoulderLerp") == nil then return false end
+        if rawget(t,"_lastWalkAngle") == nil then return false end
+        local la = rawget(t, "_localActor")
+        if type(la) ~= "table" then return false end
+        if knownGoodLA ~= nil and not rawequal(la, knownGoodLA) then
+            return false
+        end
+        return true
+    end
+
+    local function isNetObj(v)
+        if type(v) ~= "table" then return false end
+        local code=rawget(v,"_code"); local key=rawget(v,"_key"); local evts=rawget(v,"_events")
+        if not (type(code)=="string" and #code>4 and type(key)=="table" and type(evts)=="table") then return false end
+        local ok, fs = pcall(function() return v.FireServer end)
+        return ok and type(fs)=="function"
+    end
+
+    local nilCache, nilCacheT = nil, -999
+    local function getNilInstances()
+        local t = now()
+        if nilCache and t-nilCacheT < 2.5 then return nilCache end
+        if type(getnilinstances) ~= "function" then return nil end
+        local ok, nils = pcall(getnilinstances)
+        if not ok or type(nils) ~= "table" then return nil end
+        nilCache=nils; nilCacheT=t; return nils
+    end
+
+    local function scanScriptForNet(inst)
+        if type(getscriptclosure) ~= "function" then return nil end
+        local ok, fn = pcall(getscriptclosure, inst)
+        if not ok or type(fn) ~= "function" then return nil end
+        for i = 1, 512 do
+            local ou, _, uv = pcall(debug.getupvalue, fn, i)
+            if not ou or uv == nil then break end
+            if isNetObj(uv) then return uv end
+        end
+        return nil
+    end
+
+    local findNetworkObj = (function()
+        if type(State.networkModule)=="table" and isNetObj(State.networkModule) then
+            return State.networkModule
+        end
+        if type(filtergc)=="function" then
+            local ok, gc = pcall(filtergc,"table",{Keys={"_code","_key","_events","_functions"}})
+            if ok and type(gc)=="table" then
+                for _, v in ipairs(gc) do
+                    if isNetObj(v) then State.networkModule=v; return v end
+                end
+            end
+        end
+        local nils = getNilInstances()
+        if nils then
+            for _, inst in ipairs(nils) do
+                local okC, cls = pcall(function() return inst.ClassName end)
+                if okC and (cls=="LocalScript" or cls=="ModuleScript") then
+                    local net = scanScriptForNet(inst)
+                    if net then State.networkModule=net; return net end
+                end
+            end
+        end
+        return nil
+    end)
+
+    local findCtrlViaFiltergc = (function()
+        if type(filtergc) ~= "function" then return nil end
+        if hooksSetup then return nil end
+        local ok, gc = pcall(filtergc,"table",{
+            Keys={"MoveSpeed","VelocityGravity","TrySprinting","IsGrounded","IsSprinting"}
+        })
+        if not ok or type(gc) ~= "table" then return nil end
+        for _, v in ipairs(gc) do if isCtrl(v) then return v end end
+        return nil
+    end)
+
+    local lastExpensiveScanT = -999
+    local EXPENSIVE_SCAN_CD = 0.75
+
+    local findCtrlViaGetgc = (function()
+        if type(getgc) ~= "function" then return nil end
+
+        if type(filtergc) == "function" then return nil end
+        if hooksSetup then return nil end
+        local t = now()
+        if t - lastExpensiveScanT < EXPENSIVE_SCAN_CD then return nil end
+        lastExpensiveScanT = t
+
+        local ok, gc = pcall(getgc, false)
+        if not ok or type(gc) ~= "table" then return nil end
+        for _, fn in ipairs(gc) do
+            if type(fn) ~= "function" then continue end
+            for i = 1, 64 do
+                local ou, _, uv = pcall(debug.getupvalue, fn, i)
+                if not ou or uv==nil then break end
+                if isCtrl(uv) then return uv end
+            end
+        end
+        return nil
+    end)
+
+    local findCamViaFiltergc = (function()
+        if type(filtergc) ~= "function" then return nil end
+        if camHooksSetup then return nil end
+        local ok, gc = pcall(filtergc,"table",{
+            Keys={"_zoomLimit","_shoulderLerp","_lastWalkAngle"}
+        })
+        if not ok or type(gc) ~= "table" then return nil end
+        for _, v in ipairs(gc) do if isCam(v) then return v end end
+        return nil
+    end)
+
+    local findCamViaGetgc = (function()
+        if type(getgc) ~= "function" then return nil end
+
+        if type(filtergc) == "function" then return nil end
+        if camHooksSetup then return nil end
+        local t = now()
+        if t - lastExpensiveScanT < EXPENSIVE_SCAN_CD then return nil end
+        lastExpensiveScanT = t
+        local ok, gc = pcall(getgc, false)
+        if not ok or type(gc) ~= "table" then return nil end
+        for _, fn in ipairs(gc) do
+            if type(fn) ~= "function" then continue end
+            for i = 1, 64 do
+                local ou, _, uv = pcall(debug.getupvalue, fn, i)
+                if not ou or uv==nil then break end
+                if isCam(uv) then return uv end
+            end
+        end
+        return nil
+    end)
+
+    local flyActive      = false
+    local wantFly        = false
+    local straferActive  = false
+    local tpActive       = false
+    local spinBotActive  = false
+    local spinPhase      = 0
+    local bhopPrevGrounded = false
+    local speedStateMode  = 0
+    local speedU18        = nil
+    local hsEnumByName    = nil
+    local forcedHS        = nil
+    local proneHS         = nil
+    local leanLockActive  = false
+    local invisActive     = false
+    local fakeAngMode     = 0
+    local fakeAngPhase    = 0
+    local faFakeLean      = 0
+    local invPhase        = 0
+    local noFallActive    = false
+    local nfFalling       = false
+    local nfGroundHS      = nil
+    local faPacket        = 0
+    local faRealYaw       = 0
+    local faFakeYaw       = 0
+    local faFakeAimYaw    = 0
+    local faRealPitch     = 0
+    local faFakePitch     = 0
+    local faFakeHS        = nil
+    local faFakeHSName    = nil
+    local faStatePkt      = 0
+    local faDiagLeft      = 0
+    local faGhostModel    = nil
+    local faGhostHidden   = false
+    local faGhostHL       = nil
+    local faGhostRoot     = nil
+    local faGhostHead     = nil
+    local faGhostHeadOff  = nil
+    local faGhostTorsoM   = nil
+    local faGhostHeadM    = nil
+    local lastMoveInputT = 0
+
+    local velDesyncActive = false
+    local faUid           = nil
+    local faSenderAccum   = 0
+    local faSenderFlip    = -1
+    local faSenderPkt     = 0
+    local faLastPos       = nil
+    local faLastPosT      = 0
+    local faVelEst        = Vector3.zero
+    local faSenderLastSendT = -999
+    local faSenderArgs    = {}
+    local faRealState     = nil
+
+    local TWO_PI = math.pi * 2
+    local function wrapPi(x)
+        if type(x) ~= "number" then return x end
+        if x ~= x or x == math.huge or x == -math.huge then return 0 end
+        x = x % TWO_PI
+        if x > math.pi then x = x - TWO_PI end
+        return x
+    end
+    local function isValidHS(v)
+        if type(v) ~= "number" or not hsEnumByName then return false end
+        for _, hv in pairs(hsEnumByName) do if hv == v then return true end end
+        return false
+    end
+
+    local function sanitizeFakePacket(a, n)
+        if MOV.FakeAnglesClampSafe == false then return end
+        if type(a[6])  == "number" then a[6]  = wrapPi(a[6]) end
+        if type(a[9])  == "number" then a[9]  = wrapPi(a[9]) end
+        if type(a[10]) == "number" then
+            local p = a[10]
+            if p ~= p or p == math.huge or p == -math.huge then p = 0 end
+            a[10] = math.clamp(p, -1.4, 1.4)
+        end
+        if n >= 11 and type(a[11]) == "number" then
+            local l = a[11]
+            if l ~= l or l == math.huge or l == -math.huge then l = 0 end
+            a[11] = math.clamp(l, -1, 1)
+        end
+        if n >= 8 and type(a[8]) == "number" and not isValidHS(a[8]) then
+
+            a[8] = (isValidHS(faRealState) and faRealState)
+                or (hsEnumByName and hsEnumByName.Standing)
+                or faRealState
+        end
+    end
+
+    local function applyFakeAnglesToArgs(a, n, flip)
+        if type(a[6])  == "number" then faRealYaw   = a[6]  end
+        if type(a[10]) == "number" then faRealPitch = a[10] end
+        if type(a[8])  == "number" and isValidHS(a[8]) then faRealState = a[8] end
+        local realYaw = faRealYaw or (type(a[6]) == "number" and a[6]) or 0
+
+        if State.kaImpactSteer or State.kaSwingBusy then
+            return
+        end
+        local jit  = MOV.FakeAnglesJitter or 2.8
+        local pAmp = MOV.FakeAnglesPitchAmp or 1.4
+        local TAU  = math.pi * 2
+        if fakeAngMode == 1 then
+            if MOV.FakeAnglesYaw    and type(a[6])  == "number" then a[6]  = a[6] + flip * jit end
+            if MOV.FakeAnglesAimYaw and type(a[9])  == "number" then a[9]  = a[9] + flip * jit end
+            if MOV.FakeAnglesPitch  and type(a[10]) == "number" then a[10] = flip * pAmp end
+            if MOV.FakeAnglesLean  and n >= 11                  then a[11] = flip end
+        elseif fakeAngMode == 2 then
+            fakeAngPhase = (fakeAngPhase + (MOV.FakeAnglesSpinStep or 0.9)) % TAU
+            if type(a[6]) == "number" then a[6] = fakeAngPhase end
+            if MOV.FakeAnglesAimYaw and type(a[9]) == "number" then a[9] = fakeAngPhase end
+            if MOV.FakeAnglesPitch and type(a[10]) == "number" then a[10] = pAmp * 0.6 end
+            if MOV.FakeAnglesLean  and n >= 11                  then a[11] = flip end
+        elseif fakeAngMode == 3 then
+            if MOV.FakeAnglesYaw    and type(a[6])  == "number" then a[6]  = math.random() * TAU end
+            if MOV.FakeAnglesAimYaw and type(a[9])  == "number" then a[9]  = math.random() * TAU end
+            if MOV.FakeAnglesPitch and type(a[10]) == "number" then a[10] = (math.random() * 2 - 1) * pAmp end
+            if MOV.FakeAnglesLean  and n >= 11                  then a[11] = math.random() * 2 - 1 end
+        elseif fakeAngMode == 4 then
+
+            local back = realYaw + math.pi
+            if MOV.FakeAnglesYaw    and type(a[6])  == "number" then a[6]  = back end
+            if MOV.FakeAnglesAimYaw and type(a[9])  == "number" then a[9]  = back end
+            if MOV.FakeAnglesPitch and type(a[10]) == "number" then a[10] = -pAmp * 0.5 end
+            if MOV.FakeAnglesLean  and n >= 11                  then a[11] = 0 end
+        elseif fakeAngMode == 5 then
+
+            if MOV.FakeAnglesYaw    and type(a[6])  == "number" then a[6]  = realYaw + (math.random() * 2 - 1) * math.pi end
+            if MOV.FakeAnglesAimYaw and type(a[9])  == "number" then a[9]  = realYaw + (math.random() * 2 - 1) * math.pi end
+            if MOV.FakeAnglesPitch and type(a[10]) == "number" then a[10] = (math.random() * 2 - 1) * pAmp end
+            if MOV.FakeAnglesLean  and n >= 11                  then a[11] = math.random() * 2 - 1 end
+        elseif fakeAngMode == 6 then
+
+            local yaw = (flip > 0) and realYaw or (realYaw + math.pi)
+            if MOV.FakeAnglesYaw    and type(a[6])  == "number" then a[6]  = yaw end
+            if MOV.FakeAnglesAimYaw and type(a[9])  == "number" then a[9]  = yaw end
+            if MOV.FakeAnglesPitch  and type(a[10]) == "number" then a[10] = flip * pAmp end
+            if MOV.FakeAnglesLean  and n >= 11                  then a[11] = flip end
+        elseif fakeAngMode == 7 then
+
+            if MOV.FakeAnglesYaw    and type(a[6])  == "number" then a[6]  = realYaw + math.pi end
+            if MOV.FakeAnglesAimYaw and type(a[9])  == "number" then a[9]  = realYaw + math.pi end
+            if MOV.FakeAnglesPitch  and type(a[10]) == "number" then a[10] = -pAmp end
+            if MOV.FakeAnglesLean   and n >= 11                  then a[11] = flip end
+        elseif fakeAngMode == 8 then
+
+            if MOV.FakeAnglesYaw    and type(a[6])  == "number" then a[6]  = math.random() * TAU end
+            if MOV.FakeAnglesAimYaw and type(a[9])  == "number" then a[9]  = math.random() * TAU end
+            if MOV.FakeAnglesPitch  and type(a[10]) == "number" then a[10] = (math.random() * 2 - 1) * pAmp end
+            if MOV.FakeAnglesLean   and n >= 11                  then a[11] = math.random() * 2 - 1 end
+            if n >= 8 and hsEnumByName then
+                local pool = {}
+                for _, hv in pairs(hsEnumByName) do pool[#pool + 1] = hv end
+                if #pool > 0 then a[8] = pool[math.random(#pool)] end
+            end
+        end
+
+        if fakeAngMode ~= 8 and n >= 8 and hsEnumByName then
+            local wantName
+            if MOV.FakeAnglesForceState then
+                wantName = MOV.FakeAnglesForceState
+            elseif MOV.FakeAnglesStateSpoof then
+                local cyc  = MOV.FakeAnglesStateCycle or { "Crouching", "Proning", "Standing" }
+                local hold = math.max(1, MOV.FakeAnglesStateHold or 8)
+                faStatePkt = faStatePkt + 1
+                wantName = cyc[(math.floor(faStatePkt / hold) % #cyc) + 1]
+            end
+            if wantName then
+                local hv = hsEnumByName[wantName]
+                if hv ~= nil then
+                    a[8] = hv
+                    faFakeHS = hv; faFakeHSName = wantName
+                else
+                    faFakeHS = nil; faFakeHSName = nil
+                end
+            else
+                faFakeHS = nil; faFakeHSName = nil
+            end
+        else
+            faFakeHS = nil; faFakeHSName = nil
+        end
+
+        sanitizeFakePacket(a, n)
+        if type(a[6])  == "number" then faFakeYaw    = a[6]  end
+        if type(a[9])  == "number" then faFakeAimYaw = a[9]  end
+        if type(a[10]) == "number" then faFakePitch  = a[10] end
+        if n >= 11 and type(a[11]) == "number" then faFakeLean = a[11] end
+    end
+
+    local function applyVelocityDesyncToArgs(a, n, flip)
+        if not velDesyncActive then return end
+        if type(a[3]) ~= "number" or type(a[4]) ~= "number" or type(a[5]) ~= "number" then return end
+        local amp = MOV.VelocityDesyncAmp or 3.0
+        local dir
+        if MOV.VelocityDesyncUseVel and faVelEst.Magnitude > 0.1 then
+            dir = faVelEst.Unit
+            amp = amp * math.clamp(faVelEst.Magnitude / 16, 0.35, 2.5)
+        else
+            local yaw = (type(a[6]) == "number") and a[6] or (faRealYaw or 0)
+            dir = Vector3.new(-math.sin(yaw), 0, -math.cos(yaw))
+        end
+        local off = dir * (amp * flip)
+        a[3] = a[3] + off.X
+        a[4] = a[4] + off.Y + (MOV.VelocityDesyncVertical or 0) * flip
+        a[5] = a[5] + off.Z
+    end
+
+    local origAccelerate, origDecelerate, origProcessNP, origJump, origCtrlUpdate = nil, nil, nil, nil, nil
+    local origStateActor, hookedNet, hookedMt = nil, nil, nil
+    local origFireUnrel = nil
+
+    local fuWasInstance = false
+    local noClipParts   = {}
+
+    local origCamUpdate, hookedCamMt, hookedCamObj = nil, nil, nil
+
+    local tpZoom = MOV.ThirdPersonDist
+
+    local function currentZoomMax()
+        if type(camCache) == "table" then
+            local ok, zl = pcall(rawget, camCache, "_zoomLimit")
+            if ok and type(zl) == "number" and zl > 0 then return zl end
+        end
+        return MOV.ThirdPersonMax
+    end
+
+    local function adjustTPZoom(delta)
+        tpZoom = math.clamp(tpZoom + delta, 0, currentZoomMax())
+    end
+
+    local tpGui, tpGuiMinus, tpGuiPlus
+    local function ensureTPGui()
+        if tpGui or not MOV.ThirdPersonMobileGui then return end
+        if not UIS.TouchEnabled then return end
+        local ok = pcall(function()
+            local sg = Instance.new("ScreenGui")
+            sg.Name = "MOV_TPZoomGui"
+            sg.ResetOnSpawn = false
+            sg.IgnoreGuiInset = true
+            sg.DisplayOrder = 999
+            sg.Enabled = false
+
+            local function mkBtn(text, offsetX)
+                local b = Instance.new("TextButton")
+                b.Size = UDim2.new(0, 48, 0, 48)
+                b.AnchorPoint = Vector2.new(1, 1)
+                b.Position = UDim2.new(1, offsetX, 1, -160)
+                b.Text = text
+                b.TextScaled = true
+                b.Font = Enum.Font.GothamBold
+                b.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+                b.BackgroundTransparency = 0.3
+                b.TextColor3 = Color3.new(1, 1, 1)
+                b.AutoButtonColor = true
+                b.Parent = sg
+                return b
+            end
+
+            tpGuiMinus = mkBtn("-", -64)
+            tpGuiPlus  = mkBtn("+", -8)
+
+            local parent = (type(gethui) == "function" and gethui()) or LP:WaitForChild("PlayerGui")
+            sg.Parent = parent
+            tpGui = sg
+
+            tpGuiMinus.MouseButton1Click:Connect(newcclosure(function()
+                adjustTPZoom(-MOV.ThirdPersonWheelStep)
+            end))
+            tpGuiPlus.MouseButton1Click:Connect(newcclosure(function()
+                adjustTPZoom(MOV.ThirdPersonWheelStep)
+            end))
+        end)
+        if not ok then warn("[MOV] TP GUI: не удалось создать") end
+    end
+
+    local function setTPGuiVisible(v)
+        if tpGui then pcall(function() tpGui.Enabled = v end) end
+    end
+
+    local tpWheelConn, tpPinchConn = nil, nil
+
+    local function connectTPInput()
+        if not tpWheelConn then
+            tpWheelConn = UIS.InputChanged:Connect(newcclosure(function(input)
+                if not tpActive then return end
+                if input.UserInputType == Enum.UserInputType.MouseWheel then
+                    local z = input.Position.Z
+                    local sign = z > 0 and 1 or (z < 0 and -1 or 0)
+                    adjustTPZoom(-sign * MOV.ThirdPersonWheelStep)
+                end
+            end))
+        end
+        if not tpPinchConn and UIS.TouchPinch then
+            tpPinchConn = UIS.TouchPinch:Connect(newcclosure(function(_, scale, _, state)
+                if not tpActive then return end
+                if state == Enum.UserInputState.Change then
+                    adjustTPZoom(-(scale - 1) * MOV.ThirdPersonPinchSens)
+                end
+            end))
+        end
+    end
+
+    local function disconnectTPInput()
+        if tpWheelConn then pcall(function() tpWheelConn:Disconnect() end); tpWheelConn = nil end
+        if tpPinchConn then pcall(function() tpPinchConn:Disconnect() end); tpPinchConn = nil end
+    end
+
+    local function unlockMt(mt)
+        if type(setreadonly)    == "function" then pcall(setreadonly,    mt, false)
+        elseif type(make_writeable) == "function" then pcall(make_writeable, mt) end
+    end
+
+    local function setCharPartsCollide(ctrl, enabled)
+        local la = rawget(ctrl, "_localActor")
+        if type(la) ~= "table" then return end
+        local ok_c, char = pcall(function() return la.Character end)
+        if not ok_c or not char then return end
+        local ok, desc = pcall(function() return char:GetDescendants() end)
+        if not ok then return end
+        for _, p in ipairs(desc) do
+            local okC, isBP = pcall(function() return p:IsA("BasePart") end)
+            if okC and isBP then
+                if not enabled then
+                    local wasCC = p.CanCollide
+                    noClipParts[p] = wasCC
+                    pcall(function() p.CanCollide = false end)
+                else
+                    local was = noClipParts[p]
+                    if was ~= nil then
+                        pcall(function() p.CanCollide = was end)
+                        noClipParts[p] = nil
+                    end
+                end
+            end
+        end
+    end
+
+    local function teardownHooks(ctrl)
+        if not hooksSetup then return end
+        local mt = hookedMt
+        if mt then
+            unlockMt(mt)
+            if origAccelerate  then rawset(mt,"_accelerate",        origAccelerate)  end
+            if origDecelerate  then rawset(mt,"_decelerate",        origDecelerate)  end
+            if origProcessNP   then rawset(mt,"_processNewPosition", origProcessNP)  end
+            if origJump        then rawset(mt,"Jump",                origJump)        end
+            if origCtrlUpdate  then rawset(mt,"Update",              origCtrlUpdate)  end
+        end
+        if hookedNet and origFireUnrel then
+
+            local restore = fuWasInstance and origFireUnrel or nil
+            pcall(function() rawset(hookedNet, "FireUnreliableServer", restore) end)
+            origFireUnrel = nil
+            fuWasInstance = false
+        end
+        if hookedNet and origStateActor then
+            local evts = rawget(hookedNet,"_events")
+            if type(evts)=="table" then rawset(evts,"StateActor",origStateActor) end
+        end
+        if ctrl then pcall(setCharPartsCollide, ctrl, true) end
+        origAccelerate=nil; origDecelerate=nil; origProcessNP=nil; origJump=nil; origCtrlUpdate=nil
+        origStateActor=nil; hookedNet=nil; hookedMt=nil; hooksSetup=false
+        print("[MOV] Хуки контроллера сняты")
+    end
+
+    local function setupHooks(ctrl, net)
+        local mt = (type(getrawmetatable)=="function" and getrawmetatable(ctrl))
+                or getmetatable(ctrl)
+        if not mt then warn("[MOV] setupHooks: metatable не найдена") return end
+
+        if hooksSetup and mt == hookedMt then return end
+        if hooksSetup and mt ~= hookedMt then
+            pcall(teardownHooks, nil)
+        end
+
+        unlockMt(mt)
+        hookedMt = mt
+
+        local oAcc = rawget(mt, "_accelerate")
+        if type(oAcc)=="function" then
+            origAccelerate = oAcc
+            rawset(mt, "_accelerate", newcclosure(function(self, dt, inputMag)
+                if flyActive then self.MoveSpeed = 0; return end
+
+                if MOV.Speed then
+
+                    if liveInputNow then
+                        lastMoveInputT = now()
+                        local sprint = MOV.AutoSprint or UIS:IsKeyDown(MOV.SprintKey)
+                        self.TrySprinting = sprint
+                        self.IsSprinting  = sprint
+                        self.MoveSpeed    = sprint and MOV.SprintSpeed or MOV.SpeedValue
+                    else
+                        self.MoveSpeed = 0
+                        self._lastMovement = V2_ZERO
+                        self._groundedInputDirection = V3_ZERO
+                    end
+                else
+                    oAcc(self, dt, inputMag)
+                end
+            end))
+            print("[MOV] Hook: _accelerate ✓")
+        end
+
+        local oDecel = rawget(mt, "_decelerate")
+        if type(oDecel)=="function" then
+            origDecelerate = oDecel
+            rawset(mt, "_decelerate", newcclosure(function(self, dt)
+                if MOV.Speed then
+                    self.MoveSpeed = 0
+                else
+                    oDecel(self, dt)
+                end
+            end))
+            print("[MOV] Hook: _decelerate ✓")
+        end
+
+        local oPNP = rawget(mt, "_processNewPosition")
+        if type(oPNP)=="function" then
+            origProcessNP = oPNP
+            rawset(mt, "_processNewPosition", newcclosure(function(self, newPos)
+                if MOV.NoClip then
+                    return newPos, true, Vector3.new(0,1,0), nil
+                end
+                return oPNP(self, newPos)
+            end))
+            print("[MOV] Hook: _processNewPosition ✓")
+        end
+
+        local oJump = rawget(mt, "Jump")
+        if type(oJump)=="function" then
+            origJump = oJump
+            rawset(mt, "Jump", newcclosure(function(self)
+                oJump(self)
+            end))
+            print("[MOV] Hook: Jump ✓")
+        end
+
+        local oUpdate = rawget(mt, "Update")
+        if type(oUpdate) == "function" then
+            origCtrlUpdate = oUpdate
+            if not speedU18 then
+                pcall(function()
+                    local function isU18(t)
+                        if type(t) ~= "table" then return false end
+                        local count = 0
+                        for _, v in pairs(t) do
+                            if type(v) == "table"
+                               and type(rawget(v, "SPEED_MULT")) == "number"
+                               and type(rawget(v, "HEIGHT")) == "number" then
+                                count = count + 1
+                                if count >= 3 then return true end
+                            end
+                        end
+                        return false
+                    end
+
+                    local function searchUpvalues(fn, depth)
+                        if depth > 4 then return nil end
+                        local ok, uvs = pcall(debug.getupvalues, fn)
+                        if ok and type(uvs) == "table" then
+                            if isU18(uvs["u18"]) then return uvs["u18"] end
+                            for name, val in pairs(uvs) do
+                                if isU18(val) then
+                                    print("[MOV] u18 найден по структуре, upvalue:", name)
+                                    return val
+                                end
+                            end
+                        end
+                        local ok2, protos = pcall(debug.getprotos, fn)
+                        if ok2 and type(protos) == "table" then
+                            for _, proto in ipairs(protos) do
+                                if type(proto) == "function" then
+                                    local res = searchUpvalues(proto, depth + 1)
+                                    if res then return res end
+                                end
+                            end
+                        end
+                        return nil
+                    end
+
+                    local found = searchUpvalues(oUpdate, 0)
+                    if not found then
+                        for _, mfn in pairs(mt) do
+                            if type(mfn) == "function" then
+                                found = searchUpvalues(mfn, 0)
+                                if found then break end
+                            end
+                        end
+                    end
+
+                    if not found then
+                        local nils = getNilInstances()
+                        if nils then
+                            for _, inst in ipairs(nils) do
+                                local okC, cls = pcall(function() return inst.ClassName end)
+                                if okC and cls == "ModuleScript" then
+                                    local okF, fn = pcall(getscriptclosure, inst)
+                                    if okF and type(fn) == "function" then
+                                        found = searchUpvalues(fn, 0)
+                                        if found then break end
+                                    end
+                                end
+                            end
+                        end
+                    end
+
+                    if found then
+                        speedU18 = found
+                        hsEnumByName = {}
+                        for enumKey, v in pairs(speedU18) do
+                            if type(v) == "table" then
+                                local sm = rawget(v, "SPEED_MULT")
+                                local h  = rawget(v, "HEIGHT")
+                                local ns = rawget(v, "NO_SPECIAL")
+                                if     sm == 10  then hsEnumByName.Skydiving   = enumKey
+                                elseif sm == 4   then hsEnumByName.Parachuting = enumKey
+                                elseif sm == 0.3 then hsEnumByName.Proning     = enumKey
+                                elseif sm == 0.8 then hsEnumByName.Swimming    = enumKey
+                                elseif sm == 0.6 then hsEnumByName.Crouching   = enumKey
+                                elseif sm == 1 and h == 6 and not ns then
+                                    hsEnumByName.Standing = enumKey
+                                end
+                            end
+                        end
+                        proneHS = hsEnumByName.Proning
+                        local names = {}
+                        for n in pairs(hsEnumByName) do names[#names+1] = n end
+                        print("[MOV] SpeedState: u18 найдена, стейты:", table.concat(names, ","))
+                    else
+                        warn("[MOV] SpeedState: u18 не найдена — SpeedState не будет работать")
+                    end
+                end)
+            end
+            rawset(mt, "Update", newcclosure(function(self, ...)
+                liveCtrl  = self
+                liveCtrlT = now()
+                if not proneHS then
+                    local hh = rawget(self, "_hullHeight")
+                    if hh == 3 then
+                        local hs = rawget(self, "HeightState")
+                        if hs ~= nil then
+                            proneHS = hs
+                            print("[MOV] proneHS снят из Update (_hullHeight==3):", hs)
+                        end
+                    end
+                end
+                if flyActive and (self == activeCtrlRef or self == ctrlCache or self == liveCtrl) then
+                    self.VelocityGravity = 0
+                    self.IsGrounded = true
+                    return
+                end
+
+                if straferActive then
+                    local input = ...
+                    if typeof(input) == "Vector2" then
+                        self._lastMovement = input
+                        self._groundedInputDirection = input
+                    end
+                end
+
+                if forcedHS ~= nil then
+                    pcall(function() self.HeightState = forcedHS end)
+                end
+
+                local ok, r1, r2, r3 = pcall(oUpdate, self, ...)
+                if not ok then
+                    warn("[MOV] CharacterController.Update: ошибка перехвачена (не критично):", r1)
+                    return
+                end
+                return r1, r2, r3
+            end))
+            print("[MOV] Hook: Update (controller) ✓")
+        end
+
+        if net then
+            local evts = rawget(net, "_events")
+            if type(evts)=="table" then
+                local oSA = rawget(evts, "StateActor")
+                if type(oSA)=="function" then
+                    origStateActor = oSA; hookedNet = net
+                    rawset(evts, "StateActor", newcclosure(function(p76,p77,p78,p79)
+                        if MOV.FlyTPBypass and (flyActive or MOV.NoClip) and p79 then
+                            return
+                        end
+                        return oSA(p76,p77,p78,p79)
+                    end))
+                    print("[MOV] Hook: StateActor ✓")
+                end
+            end
+
+            local oFU = rawget(net, "FireUnreliableServer")
+
+            local fuInst = type(oFU) == "function"
+            if type(oFU) ~= "function" then
+                local nmt = getmetatable(net)
+                if type(nmt) == "table" then
+                    oFU = rawget(nmt, "FireUnreliableServer")
+                          or (nmt.__index and rawget(nmt.__index, "FireUnreliableServer"))
+                end
+            end
+            if type(oFU) == "function" then
+                origFireUnrel = oFU
+                fuWasInstance = fuInst
+
+                hookedNet = net
+                rawset(net, "FireUnreliableServer", newcclosure(function(self, ...)
+                    local isRM = (...) == "ReplicateMovement"
+
+                    if isRM then
+                        local u = select(2, ...)
+                        if u ~= nil then faUid = u end
+                    end
+                    local anyPacketFx = leanLockActive
+                        or invisActive or noFallActive or (fakeAngMode ~= 0)
+                        or velDesyncActive
+                    if not anyPacketFx or not isRM then
+                        return oFU(self, ...)
+                    end
+
+                    if MOV.FakeAnglesSender and MOV.FakeAnglesSuppressGame
+                       and (fakeAngMode ~= 0 or velDesyncActive)
+                       and (now() - faSenderLastSendT) < 0.2 then
+                        return
+                    end
+                    local n = select("#", ...)
+                    local a = table.pack(...)
+                    if noFallActive and n >= 8 then
+                        if nfFalling then
+                            if nfGroundHS ~= nil then a[8] = nfGroundHS end
+                        else
+                            nfGroundHS = a[8]
+                        end
+                    end
+                    if invisActive then
+                        if type(a[4]) == "number" then
+                            a[4] = a[4] + (MOV.InvisibleYOffset or -2.8)
+                        end
+                        if MOV.InvisibleProne and proneHS ~= nil then
+                            a[8] = proneHS
+                        end
+                        if MOV.InvisibleLean and n >= 11 then
+                            a[11] = (invPhase % 2 < 1) and 1 or -1
+                        end
+                        local jit = MOV.InvisibleJitter or 0
+                        if jit > 0 and type(a[3]) == "number" and type(a[5]) == "number" then
+                            a[3] = a[3] + (math.random() * 2 - 1) * jit
+                            a[5] = a[5] + (math.random() * 2 - 1) * jit
+                        end
+                    end
+                    local flip
+                    if fakeAngMode ~= 0 then
+                        faPacket = faPacket + 1
+                        flip = (faPacket % 2 == 0) and 1 or -1
+                        applyFakeAnglesToArgs(a, n, flip)
+                    elseif leanLockActive and n >= 11 then
+                        a[11] = MOV.LeanLockValue
+                    end
+
+                    if velDesyncActive and flip == nil then
+                        faPacket = faPacket + 1
+                        flip = (faPacket % 2 == 0) and 1 or -1
+                    end
+                    applyVelocityDesyncToArgs(a, n, flip or 1)
+
+                    if MOV.FakeAnglesDiag and faDiagLeft > 0 then
+                        faDiagLeft = faDiagLeft - 1
+                        local function f(v) return type(v)=="number" and string.format("%.2f", v) or tostring(v) end
+                        print(string.format(
+                            "[FA-DIAG] pos=(%s, %s, %s) orient=%s state=%s camY=%s lean=%s  [позиция=РЕАЛЬНАЯ, менять НЕ должны]",
+                            f(a[3]), f(a[4]), f(a[5]), f(a[6]), f(a[8]), f(a[10]), f(a[11])))
+                        if faDiagLeft == 0 then print("[FA-DIAG] — конец лога (жми K для нового) —") end
+                    end
+                    return oFU(self, table.unpack(a, 1, n))
+                end))
+                print("[MOV] Hook: FireUnreliableServer (Invisible/FakeAngles/NoFall/Lean) ✓")
+            end
+        end
+
+        if not proneHS then
+            pcall(function()
+                local sh = rawget(getrenv and getrenv() or {}, "shared")
+                        or rawget(getgenv and getgenv() or {}, "shared")
+                if type(sh) ~= "table" then return end
+                local en = rawget(sh, "Enum") or (type(sh.import) == "function"
+                           and pcall(sh.import, "Enum") and nil)
+                if type(en) ~= "table" then return end
+                local chs = rawget(en, "CharacterHeightState")
+                if type(chs) ~= "table" then return end
+                local prone = rawget(chs, "Proning")
+                if prone ~= nil then
+                    proneHS = prone
+                    print("[MOV] proneHS через shared.Enum ✓:", prone)
+                end
+            end)
+        end
+
+        hooksSetup = true
+        print("[MOV] Все хуки контроллера установлены")
+    end
+
+    local _camLastT = now()
+    local function camDt()
+        local t = now()
+        local d = t - _camLastT
+        _camLastT = t
+        if d <= 0 or d > 0.5 then d = 1/60 end
+        return d
+    end
+
+    local leanCur = 0
+    local LEAN_BIND = "MOV_LeanRoll"
+    local function applyLeanRoll()
+        if not MOV.LeanSprint then return end
+        if math.abs(leanCur) <= 0.02 then return end
+        local cam = getCamera()
+        if not cam then return end
+        cam.CFrame = cam.CFrame * CFrame.Angles(0, 0, math.rad(leanCur))
+    end
+
+    local function teardownCamHooks()
+        if not camHooksSetup then return end
+        if hookedCamMt and origCamUpdate then
+            unlockMt(hookedCamMt)
+            rawset(hookedCamMt, "Update", origCamUpdate)
+        end
+        origCamUpdate=nil; hookedCamMt=nil; hookedCamObj=nil; camHooksSetup=false
+        print("[MOV] Хук камеры снят")
+    end
+
+    local function setupCamHooks(cam)
+        if type(cam) ~= "table" then return end
+
+        local mt = (type(getrawmetatable)=="function" and getrawmetatable(cam))
+                or getmetatable(cam)
+        if not mt then warn("[MOV] setupCamHooks: metatable камеры не найдена") return end
+
+        if camHooksSetup and mt == hookedCamMt then return end
+        if camHooksSetup and mt ~= hookedCamMt then
+            pcall(teardownCamHooks)
+        end
+
+        unlockMt(mt)
+        hookedCamMt  = mt
+        hookedCamObj = cam
+
+        local oUpd = rawget(mt, "Update")
+        if type(oUpd) ~= "function" then
+            warn("[MOV] setupCamHooks: Update не найден")
+            return
+        end
+        origCamUpdate = oUpd
+
+        local function forceCamState()
+            if not (tpActive or spinBotActive) then return end
+            local camObj = liveCam
+            if type(camObj) ~= "table" then camObj = hookedCamObj end
+            if type(camObj) ~= "table" then return end
+            local la = rawget(camObj, "_localActor")
+            if type(la) ~= "table" then return end
+            if tpActive then
+                local zl = rawget(camObj, "_zoomLimit")
+                local z = tpZoom
+                if type(zl) == "number" and zl > 0 then
+                    z = math.clamp(z, 0, zl)
+                else
+                    z = math.max(z, 0)
+                end
+                la.Zoom          = z
+                la.Focused       = z <= 0.01
+                camObj._zoomLerp = z
+            end
+            if spinBotActive then
+                la.Orientation = spinPhase
+            end
+        end
+
+        rawset(mt, "Update", newcclosure(function(self, ...)
+            liveCam  = self
+            liveCamT = now()
+            local ok, a, b, c = pcall(oUpd, self, ...)
+            if not ok then
+                warn("[MOV] CharacterCamera.Update: ошибка перехвачена (не критично):", a)
+                pcall(forceCamState)
+
+                return
+            end
+
+            if spinBotActive then
+
+                spinPhase = (spinPhase + camDt() * MOV.SpinBotRPS * math.pi * 2) % TWO_PI
+            end
+            pcall(forceCamState)
+
+            if MOV.LeanSprint then pcall(applyLeanRoll) end
+
+            return a, b, c
+        end))
+
+        camHooksSetup = true
+        print("[MOV] Hook: CharacterCamera.Update ✓")
+    end
+
+    local _findCtrl = newcclosure(function()
+        local c = findCtrlViaFiltergc()
+        if c then print("[MOV] ctrl → filtergc"); return c end
+        local c2 = findCtrlViaGetgc()
+        if c2 then print("[MOV] ctrl → getgc"); return c2 end
+        warn("[MOV] ctrl не найден — P для диагностики")
+        return nil
+    end)
+
+    local _findCam = newcclosure(function()
+        local c = findCamViaFiltergc()
+        if c then print("[MOV] cam → filtergc"); return c end
+        local c2 = findCamViaGetgc()
+        if c2 then print("[MOV] cam → getgc"); return c2 end
+        warn("[MOV] cam не найдена (TP/SpinBot недоступны)")
+        return nil
+    end)
+
+    local function getLiveLA()
+        if type(knownGoodLA) == "table" then return knownGoodLA end
+
+        if type(liveCam) == "table" and (now() - liveCamT) < 1.0 then
+            local la = rawget(liveCam, "_localActor")
+            if type(la) == "table" then return la end
+        end
+        if type(activeCtrlRef) == "table" then
+            local la = rawget(activeCtrlRef, "_localActor")
+            if type(la) == "table" then return la end
+        end
+        return nil
+    end
+
+    local function isVehicleCtrl(c)
+        return type(c) == "table"
+            and type(rawget(c, "_solver"))  == "table"
+            and type(rawget(c, "_vehicle")) == "table"
+            and type(rawget(c, "_tune"))    == "table"
+    end
+    local function inVehicleNow()
+        local la = getLiveLA()
+        if type(la) ~= "table" then return false end
+        return isVehicleCtrl(rawget(la, "Controller"))
+    end
+
+    local function getCtrl()
+        if liveCtrl ~= nil and (now() - liveCtrlT) < LIVE_TTL and isCtrl(liveCtrl) then
+            if not rawequal(ctrlCache, liveCtrl) then
+                ctrlCache = liveCtrl
+                activeCtrlRef = liveCtrl
+                if not hooksSetup then
+                    local net = findNetworkObj()
+                    setupHooks(liveCtrl, net)
+                end
+            end
+            return liveCtrl
+        end
+        if ctrlCache and isCtrl(ctrlCache) then return ctrlCache end
+
+        if inVehicleNow() then return nil end
+
+        do
+            local la = getLiveLA()
+            if type(la) == "table" and rawget(la, "Alive") == false then return nil end
+        end
+        local t = now()
+        if t - findLastT < FIND_CD then return nil end
+        findLastT = t
+        local c = _findCtrl()
+        if c then
+            ctrlCache = c
+            activeCtrlRef = c
+            if not hooksSetup then
+                local net = findNetworkObj()
+                setupHooks(c, net)
+            end
+        end
+        return c
+    end
+
+    local function getCam()
+        if liveCam ~= nil and (now() - liveCamT) < LIVE_TTL and isCam(liveCam) then
+            if not rawequal(camCache, liveCam) then
+                camCache = liveCam
+                if not camHooksSetup then
+                    setupCamHooks(liveCam)
+                end
+            end
+            return liveCam
+        end
+        if camCache and isCam(camCache) then return camCache end
+
+        do
+            local la = getLiveLA()
+            if type(la) == "table" and rawget(la, "Alive") == false then return nil end
+        end
+        local t = now()
+        if t - findCamLastT < FIND_CAM_CD then return nil end
+        findCamLastT = t
+        local c = _findCam()
+        if c then
+            camCache = c
+            if not camHooksSetup then
+                setupCamHooks(c)
+            end
+        end
+        return c
+    end
+
+    local function resetCtrlCache() ctrlCache=nil; activeCtrlRef=nil; findLastT=-999 end
+
+    local function doJump(ctrl, velocityGravity, speedOverride)
+        ctrl.IsGrounded = true
+        local la = rawget(ctrl, "_localActor")
+        if la then pcall(function() la:Jump() end) end
+        local net = State.networkModule
+        if net then pcall(function() net:FireServer("DoJump") end) end
+        if speedOverride then ctrl.MoveSpeed = speedOverride end
+        ctrl.VelocityGravity = velocityGravity or 25
+    end
+
+    local function applySpeedState()
+        if speedStateMode == 0 then
+            forcedHS = nil
+            return true
+        end
+        if not hsEnumByName then return false end
+        local order = MOV.SpeedStateOrder or { "Skydiving", "Parachuting", "Proning" }
+        local name  = order[speedStateMode]
+        local enumKey = name and hsEnumByName[name]
+        if enumKey == nil then
+            warn("[MOV] SpeedState: стейт '"..tostring(name).."' не найден в u18")
+            forcedHS = nil
+            return false
+        end
+        forcedHS = enumKey
+        return true
+    end
+
+    local function destroyFakeGhost()
+        faGhostHidden = false
+        if faGhostModel then pcall(function() faGhostModel:Destroy() end); faGhostModel = nil end
+        if faGhostHL    then pcall(function() faGhostHL:Destroy()    end); faGhostHL = nil end
+        faGhostRoot    = nil
+        faGhostHead    = nil
+        faGhostHeadOff = nil
+        faGhostTorsoM  = nil
+        faGhostHeadM   = nil
+    end
+
+    local R15_PARTS = {
+        HumanoidRootPart = true, Head = true, UpperTorso = true, LowerTorso = true,
+        LeftUpperArm = true, LeftLowerArm = true, LeftHand = true,
+        RightUpperArm = true, RightLowerArm = true, RightHand = true,
+        LeftUpperLeg = true, LeftLowerLeg = true, LeftFoot = true,
+        RightUpperLeg = true, RightLowerLeg = true, RightFoot = true,
+    }
+
+    local faGhostRetryT = -999
+
+    local function buildFakeGhost(char)
+
+        local prevArch = nil
+        pcall(function() prevArch = char.Archivable; char.Archivable = true end)
+        local ok, clone = pcall(function() return char:Clone() end)
+        if prevArch ~= nil then pcall(function() char.Archivable = prevArch end) end
+        if not ok or not clone then return end
+
+        local root = clone:FindFirstChild("HumanoidRootPart")
+                     or clone:FindFirstChild("LowerTorso") or clone.PrimaryPart
+
+        local mat = MOV.FakeAnglesGhostMaterial or Enum.Material.Glass
+        local tr  = MOV.FakeAnglesGhostTransparency or 0.5
+        local col = MOV.FakeAnglesGhostColor or Color3.fromRGB(120, 200, 255)
+        for _, d in ipairs(clone:GetDescendants()) do
+            if d:IsA("BasePart") then
+                if R15_PARTS[d.Name] then
+                    d.Anchored    = (d == root)
+                    d.CanCollide  = false
+                    d.CanQuery    = false
+                    d.CastShadow  = false
+                    d.Material     = mat
+                    d.Transparency = tr
+                    d.Reflectance  = 0.12
+                    d.Color        = col
+                    pcall(function() d.Massless = true end)
+
+                    for _, s in ipairs(d:GetChildren()) do
+                        if s:IsA("Decal") or s:IsA("Texture") or s:IsA("SurfaceAppearance")
+                            or s:IsA("SpecialMesh") then
+                            pcall(function() s:Destroy() end)
+                        end
+                    end
+                else
+
+                    pcall(function() d:Destroy() end)
+                end
+            elseif d:IsA("Accessory") or d:IsA("Tool") or d:IsA("Clothing")
+                or d:IsA("Shirt") or d:IsA("Pants") or d:IsA("ShirtGraphic")
+                or d:IsA("Animator") or d:IsA("Humanoid") or d:IsA("Script")
+                or d:IsA("LocalScript") or d:IsA("ModuleScript") or d:IsA("Sound")
+                or d:IsA("ParticleEmitter") or d:IsA("Beam") or d:IsA("Trail")
+                or d:IsA("Decal") or d:IsA("Texture") or d:IsA("SurfaceAppearance") then
+                pcall(function() d:Destroy() end)
+            elseif d:IsA("Motor6D") then
+                pcall(function() d.Transform = CFrame.identity end)
+            end
+        end
+        clone.Name = "_faGhost"
+        pcall(function() clone.Parent = workspace end)
+        faGhostModel = clone
+        faGhostRoot  = root
+        faGhostHead  = clone:FindFirstChild("Head")
+
+        for _, m in ipairs(clone:GetDescendants()) do
+            if m:IsA("Motor6D") and m.Part1 then
+                if m.Part1.Name == "UpperTorso" then faGhostTorsoM = m
+                elseif m.Part1.Name == "Head"    then faGhostHeadM  = m end
+            end
+        end
+        if faGhostRoot and faGhostHead then
+            pcall(function()
+                faGhostHeadOff = faGhostRoot.CFrame:Inverse() * faGhostHead.CFrame
+            end)
+        end
+
+        local ok2, hl = pcall(function()
+            local h = Instance.new("Highlight")
+            h.FillColor = col
+            h.FillTransparency = math.clamp(tr + 0.35, 0, 1)
+            h.OutlineColor = MOV.FakeAnglesGhostOutline or Color3.fromRGB(180, 235, 255)
+            h.OutlineTransparency = 0
+            h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            h.Adornee = clone
+            h.Parent = clone
+            return h
+        end)
+        if ok2 then faGhostHL = hl end
+    end
+
+    local function setGhostHidden(hide)
+        if not faGhostModel then return end
+        if faGhostHidden == hide then return end
+        faGhostHidden = hide
+        local ghostTr = MOV.FakeAnglesGhostTransparency or 0.5
+        for _, d in ipairs(faGhostModel:GetDescendants()) do
+            if d:IsA("BasePart") then
+                pcall(function() d.Transparency = hide and 1 or ghostTr end)
+            end
+        end
+        if faGhostHL then pcall(function() faGhostHL.Enabled = not hide end) end
+    end
+
+    local function restyleFakeGhost()
+        if not faGhostModel then return end
+        local col = MOV.FakeAnglesGhostColor or Color3.fromRGB(120, 200, 255)
+        local tr  = MOV.FakeAnglesGhostTransparency or 0.5
+        local mat = MOV.FakeAnglesGhostMaterial or Enum.Material.Glass
+        for _, d in ipairs(faGhostModel:GetDescendants()) do
+            if d:IsA("BasePart") then
+                pcall(function()
+                    d.Color    = col
+                    d.Material = mat
+
+                    if not faGhostHidden then d.Transparency = tr end
+                end)
+            end
+        end
+        if faGhostHL then
+            pcall(function()
+                faGhostHL.FillColor        = col
+                faGhostHL.FillTransparency = math.clamp(tr + 0.35, 0, 1)
+                faGhostHL.OutlineColor     = MOV.FakeAnglesGhostOutline
+                                             or Color3.fromRGB(180, 235, 255)
+            end)
+        end
+    end
+
+    State.movRestyleFakeGhost = restyleFakeGhost
+
+    local function isFirstPersonNow(la, char)
+        local zoom = la and rawget(la, "Zoom")
+        if type(zoom) ~= "number" and la then
+            local okZ, z = pcall(function() return la.Zoom end)
+            if okZ and type(z) == "number" then zoom = z end
+        end
+        if type(zoom) == "number" then
+            return zoom <= (MOV.FakeAnglesGhostFPZoom or 0.5)
+        end
+        local cam = workspace.CurrentCamera
+        local realHead = char and char:FindFirstChild("Head")
+        if cam and realHead and realHead:IsA("BasePart") then
+            return (cam.CFrame.Position - realHead.Position).Magnitude
+                < (MOV.FakeAnglesGhostFPDist or 1.5)
+        end
+        return false
+    end
+
+    local function tickFakeGhost()
+        if fakeAngMode == 0 or not MOV.FakeAnglesGhost then
+            if faGhostModel then destroyFakeGhost() end
+            return
+        end
+
+        local ctrl = ctrlCache
+        if not ctrl then setGhostHidden(true) return end
+        local la = rawget(ctrl, "_localActor")
+        if not la then setGhostHidden(true) return end
+        local char = rawget(la, "Character")
+        if typeof(char) ~= "Instance" or not char.Parent then
+            setGhostHidden(true) return
+        end
+        if not faGhostModel or not faGhostModel.Parent then
+            destroyFakeGhost()
+
+            local t = now()
+            if t - faGhostRetryT < 1 then return end
+            faGhostRetryT = t
+
+            pcall(buildFakeGhost, char)
+            if not faGhostModel then return end
+        end
+
+        if MOV.FakeAnglesGhostFirstPersonHide ~= false then
+            local firstPerson = isFirstPersonNow(la, char)
+            setGhostHidden(firstPerson)
+            if firstPerson then return end
+        else
+            setGhostHidden(false)
+        end
+
+        local base = rawget(la, "Position") or rawget(la, "SimulatedPosition")
+                     or rawget(ctrl, "_correctedPosition") or rawget(ctrl, "_position")
+        if typeof(base) ~= "Vector3" then
+
+            setGhostHidden(true)
+            return
+        end
+
+        local yaw   = faFakeYaw    or 0
+        local lean  = faFakeLean   or 0
+        local pitch = faFakePitch  or 0
+        local aimDelta = (faFakeAimYaw or yaw) - yaw
+
+        local stateY, proneTilt = 0, 0
+        local hsN = faFakeHSName
+        if hsN == "Crouching" then
+            stateY = -(MOV.FakeAnglesCrouchDrop or 1.4)
+        elseif hsN == "Proning" then
+            stateY = -(MOV.FakeAnglesProneDrop or 2.4)
+            proneTilt = -math.rad(80)
+        end
+
+        local bodyCF = CFrame.new(base + Vector3.new(0, stateY, 0))
+            * CFrame.Angles(0, yaw, 0) * CFrame.Angles(proneTilt, 0, 0)
+        pcall(function() faGhostModel:PivotTo(bodyCF) end)
+
+        if faGhostTorsoM then
+            pcall(function()
+                faGhostTorsoM.Transform =
+                    CFrame.Angles(0, -aimDelta, -math.rad(lean * 25))
+                    * CFrame.Angles(pitch * 0.5, aimDelta, 0)
+            end)
+        end
+
+        if faGhostHeadM then
+            pcall(function()
+                faGhostHeadM.Transform = CFrame.Angles(pitch * 0.5, aimDelta, 0)
+            end)
+        elseif faGhostHead and faGhostHead.Parent and faGhostHeadOff and faGhostRoot then
+
+            local rootCF = faGhostRoot.CFrame
+            pcall(function()
+                faGhostHead.CFrame = rootCF * faGhostHeadOff
+                    * CFrame.Angles(0, aimDelta, 0) * CFrame.Angles(pitch, 0, 0)
+            end)
+        end
+    end
+
+    local function readLiveActorPacket()
+        local ctrl = ctrlCache or liveCtrl
+        if not ctrl then return nil end
+        local la = rawget(ctrl, "_localActor")
+        if type(la) ~= "table" then return nil end
+        local pos = rawget(la, "ForceNextPosition") or rawget(la, "SimulatedPosition")
+        if typeof(pos) ~= "Vector3" then return nil end
+
+        local t = now()
+        if faLastPos and t > faLastPosT then
+            local dt = t - faLastPosT
+            if dt > 0 then
+                local v = (pos - faLastPos) / dt
+
+                faVelEst = faVelEst:Lerp(v, 0.35)
+            end
+        end
+        faLastPos, faLastPosT = pos, t
+        return la, pos
+    end
+
+    local tickSender = (function(dt)
+        if not MOV.FakeAnglesSender then return end
+        if fakeAngMode == 0 and not velDesyncActive then return end
+        if not (hooksSetup and origFireUnrel and hookedNet and faUid ~= nil) then return end
+
+        local hz = MOV.FakeAnglesSendHz or 0
+        local cap = MOV.FakeAnglesSendBurstCap or 3
+        local sends = 1
+        if hz > 0 then
+            faSenderAccum = faSenderAccum + (dt or 0)
+            local period = 1 / hz
+            if faSenderAccum < period then return end
+            sends = math.clamp(math.floor(faSenderAccum / period), 1, cap)
+            faSenderAccum = faSenderAccum - sends * period
+        end
+
+        local la, pos = readLiveActorPacket()
+        if not la or not pos then return end
+
+        local bOri  = rawget(la, "Orientation") or 0
+        local bCamX = rawget(la, "CameraX") or 0
+        local bCamY = rawget(la, "CameraY") or 0
+        local bLean = rawget(la, "LeanGoal") or 0
+        local a = faSenderArgs
+        a[1] = "ReplicateMovement"; a[2] = faUid
+        a[7]  = rawget(la, "Sprinting")
+        a[8]  = rawget(la, "HeightState")
+        a[12] = rawget(la, "Platform")
+        local n = 12
+
+        for _ = 1, sends do
+
+            a[3], a[4], a[5] = pos.X, pos.Y, pos.Z
+            a[6], a[9], a[10], a[11] = bOri, bCamX, bCamY, bLean
+            faSenderPkt  = faSenderPkt + 1
+            faSenderFlip = -faSenderFlip
+            if fakeAngMode ~= 0 then
+                applyFakeAnglesToArgs(a, n, faSenderFlip)
+            end
+            applyVelocityDesyncToArgs(a, n, faSenderFlip)
+            local ok = pcall(origFireUnrel, hookedNet, table.unpack(a, 1, n))
+            if ok then faSenderLastSendT = now() end
+        end
+    end)
+
+    local function tickSpeedWatchdog(ctrl)
+        if not MOV.Speed then return end
+        if flyActive then return end
+
+        if not liveInputNow then
+            ctrl.MoveSpeed = 0
+            ctrl._lastMovement = V2_ZERO
+            ctrl._groundedInputDirection = V3_ZERO
+        end
+    end
+
+    local flyLastPos = nil
+
+    local function flyReadInputDir()
+        local cam = getCamera()
+        local dir = Vector3.zero
+        if cam then
+            local lk, rg = cam.CFrame.LookVector, cam.CFrame.RightVector
+            if UIS:IsKeyDown(Enum.KeyCode.W) then dir += lk end
+            if UIS:IsKeyDown(Enum.KeyCode.S) then dir -= lk end
+            if UIS:IsKeyDown(Enum.KeyCode.D) then dir += rg end
+            if UIS:IsKeyDown(Enum.KeyCode.A) then dir -= rg end
+        end
+        if UIS:IsKeyDown(MOV.FlyUpKey)   then dir += Vector3.yAxis end
+        if UIS:IsKeyDown(MOV.FlyDownKey) then dir -= Vector3.yAxis end
+        return dir
+    end
+
+    local function flyResetState(ctrl)
+
+        local la = ctrl and rawget(ctrl, "_localActor")
+        if type(la) == "table" then
+            local okR, rp = pcall(function() return la.RootPart end)
+            if okR and typeof(rp) == "Instance" then
+                local okP, pos = pcall(function() return rp.Position end)
+                if okP and typeof(pos) == "Vector3" and pos.Magnitude > 0.1 then
+                    flyLastPos = pos
+                    return
+                end
+            end
+        end
+
+        if type(la) == "table" then
+            local ok, pos = pcall(function() return la.Position end)
+            if ok and typeof(pos) == "Vector3" and pos.Magnitude > 0.1 then
+                flyLastPos = pos
+                return
+            end
+        end
+
+        if ctrl then
+            local ok, pos = pcall(function() return ctrl._position end)
+            if ok and typeof(pos) == "Vector3" and pos.Magnitude > 0.1 then
+                flyLastPos = pos
+            end
+        end
+    end
+
+    local function tickFlyBody(ctrl, dt)
+        ctrl.VelocityGravity = 0
+        ctrl.IsGrounded      = true
+        ctrl.MoveSpeed       = 0
+        ctrl._startPhysics   = nil
+
+        local la = rawget(ctrl, "_localActor")
+
+        if flyLastPos == nil then
+            flyResetState(ctrl)
+            if flyLastPos == nil then return end
+        end
+
+        local dir = flyReadInputDir()
+        local newPos = flyLastPos
+        if dir.Magnitude > 0 then
+            newPos = flyLastPos + dir.Unit * MOV.FlySpeed * dt
+        end
+        flyLastPos = newPos
+
+        local curYaw = 0
+        if type(la) == "table" then
+            local yaw = rawget(la, "Orientation")
+            if type(yaw) == "number" then curYaw = yaw end
+        end
+        local newCFrame = CFrame.new(newPos) * CFrame.Angles(0, curYaw, 0)
+
+        ctrl:Teleport(newCFrame)
+        ctrl._position = newPos
+
+        local cyl = rawget(ctrl, "_cylinder")
+        if typeof(cyl) == "Instance" then
+            local hullH = rawget(ctrl, "_hullHeight") or 6
+            cyl.CFrame = CFrame.new(newPos, newPos + Vector3.new(0, 1, 0))
+                        * CFrame.Angles(0, math.pi / 2, 0)
+            cyl.Size = Vector3.new(hullH - 3, 3, 3)
+        end
+        ctrl._lastSafePosition = newPos
+
+        if type(la) == "table" then
+            la.SimulatedPosition = newPos
+            la.ForceNextPosition = newPos
+            la.Position          = newPos
+            la.CFrame            = newCFrame
+            la._lastCFrame       = newCFrame
+            la.Direction         = V2_ZERO
+            local rp = rawget(la, "RootPart")
+            if typeof(rp) == "Instance" then
+                rp.CFrame = newCFrame
+            end
+        end
+    end
+
+    local function tickFly(ctrl, dt)
+        if not flyActive then flyLastPos = nil; return end
+
+        if inVehicleNow() then flyLastPos = nil; return end
+        if not ctrl then return end
+        pcall(tickFlyBody, ctrl, dt)
+    end
+
+    local function tickBunnyHop(ctrl)
+        if not MOV.BunnyHop then bhopPrevGrounded=ctrl.IsGrounded; return end
+        local grounded = ctrl.IsGrounded
+        if not bhopPrevGrounded and grounded then
+            doJump(ctrl, 25, nil)
+        end
+        bhopPrevGrounded = grounded
+    end
+
+    local ijConn = nil
+    local function setupInfiniteJump()
+        if ijConn then ijConn:Disconnect() end
+        ijConn = UIS.JumpRequest:Connect(newcclosure(function()
+            if not MOV.InfiniteJump then return end
+            local ctrl = getCtrl()
+            if ctrl then ctrl.IsGrounded=true end
+        end))
+    end
+
+    local function tickAntiVoid(ctrl)
+        if not MOV.AntiVoid then return end
+        local pos = rawget(ctrl,"_position")
+        if typeof(pos)=="Vector3" and pos.Y < MOV.AntiVoidY then
+            local safe = Vector3.new(pos.X, MOV.AntiVoidSafeY, pos.Z)
+            ctrl._position=safe; ctrl.VelocityGravity=0
+            local la = rawget(ctrl,"_localActor")
+            if la then la.SimulatedPosition=safe end
+        end
+    end
+
+    local function tickLean(ctrl, dt)
+        if not MOV.LeanSprint then leanCur = 0; return end
+        local gid = rawget(ctrl, "_groundedInputDirection")
+        local moving = gid and gid.Magnitude > 0.05 or false
+        local target = (ctrl.IsSprinting and moving) and MOV.LeanAngle or 0
+        leanCur = leanCur + (target - leanCur) * math.clamp(dt * 12, 0, 1)
+        if not camHooksSetup then applyLeanRoll() end
+    end
+
+    local function runDiagnostic()
+        logBuf = {}
+        log("[DIAG] ═══════════════════════════════════════")
+        log("[DIAG] os.clock:", now(), "| hooksSetup:", hooksSetup, "| camHooksSetup:", camHooksSetup)
+        log("[DIAG] fly:", flyActive, "wantFly:", wantFly, "| NoClip:", MOV.NoClip,
+            "| spinBot:", spinBotActive, "| tp:", tpActive)
+        log("[DIAG] Speed:", MOV.Speed, MOV.SpeedValue, "/", MOV.SprintSpeed,
+            "AutoSprint:", MOV.AutoSprint)
+        log("[DIAG] net:", type(State.networkModule),
+            isNetObj(State.networkModule) and "✓" or "✗")
+        if type(filtergc)=="function" then
+            local ok, gc = pcall(filtergc,"table",{Keys={"MoveSpeed","VelocityGravity","TrySprinting","IsGrounded","IsSprinting"}})
+            if ok and gc then
+                log("[DIAG] filtergc кандидатов ctrl:", #gc)
+                for i, v in ipairs(gc) do
+                    local okLa, la = pcall(rawget, v, "_localActor")
+                    if not okLa or type(la) ~= "table" then la = nil end
+                    log(("[DIAG]   [%d] isCtrl=%s alive=%s GID=%s Zoom=%s"):format(
+                        i, tostring(isCtrl(v)),
+                        la and tostring(rawget(la,"Alive")) or "?",
+                        typeof(rawget(v,"_groundedInputDirection")),
+                        la and tostring(rawget(la,"Zoom")) or "?"))
+                end
+            end
+            local okC, gcC = pcall(filtergc,"table",{Keys={"_zoomLimit","_shoulderLerp","_lastWalkAngle"}})
+            if okC and gcC then
+                log("[DIAG] filtergc кандидатов cam:", #gcC)
+                for i, v in ipairs(gcC) do
+                    log(("[DIAG]   [%d] isCam=%s"):format(i, tostring(isCam(v))))
+                end
+            end
+        end
+        local ctrl = ctrlCache
+        log("[DIAG] ctrlCache:", ctrl~=nil and isCtrl(ctrl) or false)
+        if ctrl then
+            log("[DIAG]   MoveSpeed:", ctrl.MoveSpeed,
+                "IsGrounded:", ctrl.IsGrounded, "VG:", ctrl.VelocityGravity)
+            local la = rawget(ctrl,"_localActor")
+            log("[DIAG]   la.Zoom:", la and rawget(la,"Zoom") or "?",
+                "la.Orientation:", la and rawget(la,"Orientation") or "?",
+                "la.Alive:", la and rawget(la,"Alive") or "?")
+            if hookedMt then
+                log("[DIAG]   _accelerate:", type(rawget(hookedMt,"_accelerate")),
+                    "| _decelerate:", type(rawget(hookedMt,"_decelerate")),
+                    "| _pNP:", type(rawget(hookedMt,"_processNewPosition")))
+            end
+
+            if type(la) == "table" then
+                log("[DIAG]   ── ПОЛНЫЙ ДАМП ПОЛЕЙ _localActor ──")
+                local okIter, err = pcall(function()
+                    local seen = {}
+                    for k, v in next, la do
+                        seen[k] = true
+                        local tv = type(v)
+                        local sv = (tv=="table") and ("<table>") or tostring(v)
+                        log(("[DIAG]     %s = %s (%s)"):format(tostring(k), sv, tv))
+                    end
+                    for k, v in pairs(la) do
+                        if not seen[k] then
+                            local tv = type(v)
+                            local sv = (tv=="table") and ("<table>") or tostring(v)
+                            log(("[DIAG]     [pairs-only] %s = %s (%s)"):format(tostring(k), sv, tv))
+                        end
+                    end
+                end)
+                if not okIter then
+                    log("[DIAG]   дамп полей упал:", tostring(err))
+                end
+                log("[DIAG]   ── КОНЕЦ ДАМП�� ──")
+            end
+        end
+        log("[DIAG] camCache:", camCache~=nil and isCam(camCache) or false)
+        if hookedCamMt then
+            log("[DIAG]   cam.Update hooked:", type(rawget(hookedCamMt,"Update")))
+        end
+        if type(camCache) == "table" then
+            log("[DIAG]   ── ПОЛНЫЙ ДАМП ПОЛЕЙ cam-ОБЪЕКТА ──")
+            local okIter, err = pcall(function()
+                local seen = {}
+                for k, v in next, camCache do
+                    seen[k] = true
+                    local tv = type(v)
+                    local sv = (tv=="table") and ("<table>") or tostring(v)
+                    log(("[DIAG]     %s = %s (%s)"):format(tostring(k), sv, tv))
+                end
+                for k, v in pairs(camCache) do
+                    if not seen[k] then
+                        local tv = type(v)
+                        local sv = (tv=="table") and ("<table>") or tostring(v)
+                        log(("[DIAG]     [pairs-only] %s = %s (%s)"):format(tostring(k), sv, tv))
+                    end
+                end
+            end)
+            if not okIter then log("[DIAG]   дамп камеры упал:", tostring(err)) end
+            log("[DIAG]   ─��� КОНЕЦ ДАМПА cam ──")
+        end
+        log("[DIAG] ══════════════════════════════════════")
+        flushLog("brm5_diag.txt")
+    end
+
+    local function dumpNilInstances()
+        local nils=getNilInstances(); if not nils then return end
+        local lines={("Всего: %d"):format(#nils)}
+        for i, inst in ipairs(nils) do
+            local okC,cls=pcall(function() return inst.ClassName end)
+            local okN,nm =pcall(function() return inst.Name end)
+            lines[#lines+1]=("[%d] %s | %s"):format(i, okC and cls or "?", okN and nm or "?")
+        end
+        local c=table.concat(lines,"\n")
+        if type(writefile)    =="function" then pcall(writefile,    "brm5_nilinstances_dump.txt",c) end
+        if type(setclipboard) =="function" then pcall(setclipboard, c) end
+        print("[MOV] Дамп → brm5_nilinstances_dump.txt")
+    end
+
+    local crAddedCount, crRemovingCount   = 0, 0
+    local watchdogDeathCount, watchdogRecoverCount = 0, 0
+    local wasCtrlAliveLastFrame = false
+    local lastKnownCtrl = nil
+    local knownGoodCtrl = nil
+    local recovering = false
+    local attemptRecovery
+
+    local function handleLocalDeath(oldCtrl)
+
+        if MOV.PreserveStateOnDeath == false then
+            flyActive=false; straferActive=false; spinBotActive=false
+            speedStateMode=0
+            fakeAngMode=0; noFallActive=false
+            velDesyncActive=false
+            leanLockActive=false
+            invisActive=false
+            tpActive=false; MOV.NoClip=false
+        end
+
+        pcall(applySpeedState)
+        fakeAngPhase=0; faPacket=0
+        nfFalling=false; nfGroundHS=nil
+        faLastPos=nil; faVelEst=Vector3.zero
+        pcall(destroyFakeGhost)
+        noClipParts={}
+        flyLastPos = nil
+
+        ctrlCache      = nil
+        activeCtrlRef  = nil
+        liveCtrl       = nil
+        liveCtrlT      = -999
+        camCache       = nil
+        liveCam        = nil
+        liveCamT       = -999
+        print("[MOV] Death detected -> инстанс сброшен, настройки сохранены (preserve="
+              ..tostring(MOV.PreserveStateOnDeath ~= false)..")")
+        if not recovering then
+            task.spawn(attemptRecovery)
+        end
+    end
+
+    attemptRecovery = function()
+        if recovering then return end
+        recovering = true
+
+        local ok, err = pcall(function()
+            noClipParts = {}
+            setupInfiniteJump()
+
+            local ctrl = nil
+            for attempt = 1, 60 do
+                if hooksSetup and liveCtrl ~= nil and isCtrl(liveCtrl) then
+                    ctrl = liveCtrl
+                    ctrlCache     = liveCtrl
+                    activeCtrlRef = liveCtrl
+                    print("[MOV] Respawn: liveCtrl подхвачен за попытку", attempt, "(без скана)")
+                    break
+                end
+                task.wait(0.05)
+            end
+
+            if not ctrl then
+                print("[MOV] Respawn: liveCtrl не появился — фолбэк на скан")
+
+                knownGoodLA = nil
+                resetCtrlCache()
+                ctrl = getCtrl()
+                getCam()
+                if ctrl and not hooksSetup then
+                    pcall(setupHooks, ctrl, findNetworkObj())
+                end
+            end
+
+            if not ctrl then
+                warn("[MOV] Respawn: ctrl так и не найден!")
+            else
+                watchdogRecoverCount = watchdogRecoverCount + 1
+            end
+
+            if MOV.FlyPersist and wantFly then
+                flyActive = true
+                flyLastPos = nil
+                print("[MOV] Fly восстановлен после респавна")
+            end
+
+            if ctrl and MOV.PreserveStateOnDeath ~= false then
+                pcall(applySpeedState)
+                if MOV.NoClip then pcall(setCharPartsCollide, ctrl, false) end
+                faLastPos = nil; faVelEst = Vector3.zero
+                faUid = faUid
+                print("[MOV] Настройки переприменены: fly="..tostring(flyActive)
+                      .." fakeAng="..tostring(fakeAngMode).." velDesync="..tostring(velDesyncActive)
+                      .." noclip="..tostring(MOV.NoClip).." speedState="..tostring(speedStateMode))
+            end
+        end)
+        if not ok then
+            warn("[MOV] attemptRecovery: ОШИБКА (перехвачена, recovering всё равно сброшен):", err)
+        end
+        recovering = false
+    end
+
+    local function onInput(input, processed)
+        if processed then return end
+        if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+        local kc = input.KeyCode
+
+        if kc == MOV.SpeedToggleKey then
+            MOV.Speed = not MOV.Speed
+            print("[MOV] Speed:", MOV.Speed, "→", MOV.SpeedValue, "/", MOV.SprintSpeed)
+        end
+
+        if kc == MOV.FlyToggleKey then
+            flyActive = not flyActive
+            wantFly = flyActive
+            if not flyActive then
+                local ctrl = getCtrl()
+                if ctrl then ctrl.VelocityGravity = -10 end
+            end
+            print("[MOV] Fly:", flyActive)
+        end
+
+        if kc == MOV.StraferKey then
+            straferActive = not straferActive
+            print("[MOV] Strafer (free strafe):", straferActive)
+        end
+
+        if kc == MOV.SpeedStateKey then
+            local order = MOV.SpeedStateOrder or { "Skydiving", "Parachuting", "Proning" }
+            speedStateMode = (speedStateMode + 1) % (#order + 1)
+            if not hooksSetup then
+                local ctrl = getCtrl()
+                if ctrl then setupHooks(ctrl, findNetworkObj()) end
+            end
+            local applied = applySpeedState()
+            if speedStateMode == 0 then
+                print("[MOV] SpeedState: OFF")
+            else
+                local nm = order[speedStateMode]
+                local mult = ({ Skydiving="x10", Parachuting="x4", Proning="x0.3",
+                                Swimming="x0.8", Crouching="x0.6", Standing="x1" })[nm] or "?"
+                print("[MOV] SpeedState:", nm, mult,
+                      applied and "" or "(u18 ещё не найден — нажми ещё раз через кадр)")
+            end
+        end
+
+        if kc == MOV.FakeAnglesKey then
+            fakeAngMode = (fakeAngMode + 1) % 9
+            fakeAngPhase = 0
+            faPacket = 0
+            faStatePkt = 0
+            if fakeAngMode == 0 then pcall(destroyFakeGhost) end
+            if fakeAngMode ~= 0 and not hooksSetup then
+                local ctrl = getCtrl()
+                if ctrl then setupHooks(ctrl, findNetworkObj()) end
+            end
+            local names = { [0]="OFF", [1]="Instant", [2]="Spin", [3]="Random",
+                            [4]="Backwards", [5]="Jitter", [6]="Twitch",
+                            [7]="Break(1e18 TEST)", [8]="Chaos(rand TEST)" }
+            print("[MOV] FakeAngles:", names[fakeAngMode])
+        end
+
+        if kc == (MOV.FakeAnglesDiagKey or Enum.KeyCode.K) then
+            MOV.FakeAnglesDiag = not MOV.FakeAnglesDiag
+            faDiagLeft = MOV.FakeAnglesDiag and (MOV.FakeAnglesDiagCount or 20) or 0
+            print("[MOV] FakeAngles ДИАГНОСТИКА:", MOV.FakeAnglesDiag and "ВКЛ" or "выкл",
+                  "— смотри [FA-DIAG] в консоли (pos должна быть РЕАЛЬНОЙ)")
+        end
+
+        if kc == MOV.VelocityDesyncKey then
+            velDesyncActive = not velDesyncActive
+            faLastPos = nil; faVelEst = Vector3.zero
+            if velDesyncActive and not hooksSetup then
+                local ctrl = getCtrl()
+                if ctrl then setupHooks(ctrl, findNetworkObj()) end
+            end
+            print("[MOV] VelocityDesync:", velDesyncActive,
+                  "(amp="..tostring(MOV.VelocityDesyncAmp)..")")
+        end
+
+        if kc == MOV.LeanLockKey then
+            leanLockActive = not leanLockActive
+            if leanLockActive and not hooksSetup then
+                local ctrl = getCtrl()
+                if ctrl then setupHooks(ctrl, findNetworkObj()) end
+            end
+            print("[MOV] LeanLock:", leanLockActive, "(LeanGoal="..tostring(MOV.LeanLockValue)..")")
+        end
+
+        if kc == MOV.InvisibleKey then
+            invisActive = not invisActive
+            if invisActive and not hooksSetup then
+                local ctrl = getCtrl()
+                if ctrl then setupHooks(ctrl, findNetworkObj()) end
+            end
+            print("[MOV] Invisible:", invisActive,
+                  "(Y offset "..tostring(MOV.InvisibleYOffset)..")")
+        end
+
+        if kc == MOV.SpinBotKey then
+            spinBotActive = not spinBotActive; spinPhase = 0
+            if spinBotActive and not camHooksSetup then
+                local cam = getCam()
+                if not cam then warn("[MOV] SpinBot: камера не ��айдена, повтори через ��екунду") end
+            end
+            print("[MOV] SpinBot:", spinBotActive)
+        end
+
+        if kc == MOV.ThirdPersonKey then
+            tpActive = not tpActive
+            if tpActive then
+                if tpZoom <= 0.01 then
+                    tpZoom = MOV.ThirdPersonDist
+                end
+                if not camHooksSetup then
+                    local cam = getCam()
+                    if not cam then warn("[MOV] ForceThirdPerson: камера не найдена, повтори через секунду") end
+                end
+                ensureTPGui()
+                setTPGuiVisible(true)
+            else
+                setTPGuiVisible(false)
+                local ctrl = getCtrl()
+                if ctrl then
+                    local la = rawget(ctrl,"_localActor")
+                    if type(la)=="table" then pcall(function() la.Zoom=0 end) end
+                end
+            end
+            print("[MOV] ForceThirdPerson:", tpActive, "| zoom:", tpZoom, "/", currentZoomMax())
+        end
+
+        if kc == MOV.NoClipKey then
+            MOV.NoClip = not MOV.NoClip
+            local ctrl = getCtrl()
+            if ctrl then
+                if not hooksSetup then
+                    setupHooks(ctrl, findNetworkObj())
+                end
+                setCharPartsCollide(ctrl, not MOV.NoClip)
+            end
+            print("[MOV] NoClip:", MOV.NoClip)
+        end
+
+        if kc == MOV.NoFallKey then
+            noFallActive = not noFallActive
+            nfFalling = false; nfGroundHS = nil
+            if noFallActive and not hooksSetup then
+                local ctrl = getCtrl()
+                if ctrl then setupHooks(ctrl, findNetworkObj()) end
+            end
+            print("[MOV] NoFall:", noFallActive, "(HeightState spoof)")
+        end
+
+        if kc == MOV.DumpNilKey  then dumpNilInstances() end
+        if kc == MOV.DiagKey     then task.spawn(runDiagnostic) end
+
+        if kc == MOV.DebugKey then
+            local ctrl = getCtrl()
+            print("━━━━━━━━ [MOV DIAG v29] ━━━━━━━━")
+
+            print("  [HOOKS] hooksSetup:", hooksSetup, "| camHooksSetup:", camHooksSetup)
+            if hookedMt then
+                local curUpd = rawget(hookedMt, "Update")
+                local hookInstalled = (curUpd ~= nil and curUpd ~= origCtrlUpdate)
+                print("  [HOOKS] hookedMt: OK | ctrl.Update хук:", hookInstalled and "НАШ ✓" or "ОРИГИНАЛ ✗")
+            else
+                print("  [HOOKS] hookedMt: nil → setupHooks не вызывался или teardown случился")
+            end
+
+            print("  [CTRL] найден:", ctrl~=nil, "| ctrlCache:", ctrlCache~=nil,
+                          "| identity:", ctrl and tostring(ctrl):match("0x%x+") or "nil")
+            if ctrl then
+                local la = rawget(ctrl, "_localActor")
+                print("  [CTRL] la:", la~=nil, "| la type:", type(la))
+                if type(la) == "table" then
+                    local okLP  = LP.Character ~= nil
+                    local okChr, char = pcall(function() return rawget(la,"Character") end)
+                    local okRoot, root = pcall(function() return rawget(la,"RootPart") end)
+                    local okIlp, ilp = pcall(function() return rawget(la,"IsLocalPlayer") end)
+                    print("  [CTRL] LP.Character~=nil (ожидаем false):", okLP)
+                    print("  [CTRL] la.Character:", okChr and tostring(char) or "ERR",
+                                "| la.RootPart:", okRoot and tostring(root) or "ERR")
+                    print("  [CTRL] la.IsLocalPlayer (новый фильтр isCtrl):", okIlp and tostring(ilp) or "ERR")
+                    print("  [CTRL] la.Zoom:", rawget(la,"Zoom"),
+                                "la.Alive:", rawget(la,"Alive"),
+                                "la.Focused:", rawget(la,"Focused"))
+                    print("  [CTRL] la.ADS:", rawget(la,"ADS"),
+                                "la.CQB:", rawget(la,"CQB"),
+                                "la.Downed:", rawget(la,"Downed"))
+                end
+                print("  [CTRL] MoveSpeed:", ctrl.MoveSpeed,
+                              "VelocityGravity:", ctrl.VelocityGravity,
+                              "IsGrounded:", ctrl.IsGrounded)
+                local okCyl, cylCF = pcall(function() return ctrl._cylinder.CFrame end)
+                if okCyl and type(la) == "table" then
+                    local okPos, pos = pcall(function() return la.Position end)
+                    if okPos then
+                        local dist = (cylCF.Position - pos).Magnitude
+                        print("  [CTRL] |_cylinder - la.Position| =", math.floor(dist*100)/100,
+                                    dist > 5 and "⚠ РАССИНХРОН" or "OK")
+                    end
+                end
+            end
+
+            print("  [CAM] camCache:", camCache~=nil,
+                          "| identity:", camCache and tostring(camCache):match("0x%x+") or "nil")
+            if camCache then
+                local cam = camCache
+                local la  = rawget(cam, "_localActor")
+                print("  [CAM] la:", la~=nil)
+                if la then
+                    local okZ, zoomVal = pcall(function() return la.Zoom end)
+                    local okF, focVal  = pcall(function() return la.Focused end)
+                    local okA, adsVal  = pcall(function() return la.ADS end)
+                    print("  [CAM] la.Zoom:", okZ and tostring(zoomVal) or "ERR",
+                                "la.Focused:", okF and tostring(focVal) or "ERR",
+                                "la.ADS:", okA and tostring(adsVal) or "ERR")
+                    print("  [CAM] _zoomLerp:", cam._zoomLerp,
+                                "_zoomLimit:", cam._zoomLimit)
+                end
+            end
+            print("  [CAM] tpActive:", tpActive, "| tpZoom:", tpZoom, "/", currentZoomMax())
+            print("  [CAM] liveCam:", liveCam ~= nil,
+                        "| свежесть:", liveCam and string.format("%.2fs", now() - liveCamT) or "n/a")
+
+            print("  [FLY] flyActive:", flyActive, "| wantFly:", wantFly,
+                          "| flyLastPos:", flyLastPos ~= nil and tostring(flyLastPos) or "nil")
+
+            print("  [RESPAWN] watchdogDeathCount:", watchdogDeathCount,
+                        "| watchdogRecoverCount:", watchdogRecoverCount,
+                        "| recovering:", recovering)
+            print("  [RESPAWN] LP.CharacterRemoving выстрелов:", crRemovingCount,
+                        "| LP.CharacterAdded выстрелов:", crAddedCount,
+                        (crRemovingCount == 0 and crAddedCount == 0)
+                            and "⚠ ПОДТВЕРЖДЕНО: события Character* не стреляют в этой игре"
+                            or "")
+
+            print("  [MISC] Speed:", MOV.Speed, "| strafer:", straferActive,
+                          "| spinBot:", spinBotActive, "| NoClip:", MOV.NoClip)
+            print("  [MISC] InfJump:", MOV.InfiniteJump, "| BunnyHop:", MOV.BunnyHop)
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━��")
+        end
+    end
+
+    local function onJumpInput(input, _processed)
+        if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+        local kc = input.KeyCode
+
+        if kc == MOV.SuperJumpKey then
+            local ctrl = getCtrl()
+            if ctrl then
+                doJump(ctrl, MOV.SuperJumpVel, nil)
+                print("[MOV] SuperJump ↑", MOV.SuperJumpVel)
+            end
+        end
+
+    end
+
+    local conns = {}
+
+    local started = false
+
+    local tick = (function(dt)
+        if not State.running then return end
+        local ctrl = getCtrl()
+
+        if ctrl == nil and inVehicleNow() then
+            getCam()
+            return
+        end
+
+        local aliveNow = ctrl ~= nil
+        local la = aliveNow and rawget(ctrl, "_localActor") or nil
+
+        local identitySwapped = aliveNow and knownGoodLA ~= nil and not rawequal(la, knownGoodLA)
+
+        local ctrlSwapped = aliveNow and knownGoodCtrl ~= nil and not rawequal(ctrl, knownGoodCtrl)
+
+        if (wasCtrlAliveLastFrame and not aliveNow) or identitySwapped or ctrlSwapped then
+
+            if not aliveNow then
+                local liveLA = getLiveLA()
+                if type(liveLA) == "table" and rawget(liveLA, "Alive") == true then
+                    return
+                end
+            end
+            watchdogDeathCount = watchdogDeathCount + 1
+            pcall(handleLocalDeath, lastKnownCtrl)
+        end
+        wasCtrlAliveLastFrame = aliveNow
+        if aliveNow then lastKnownCtrl = ctrl; knownGoodLA = la; knownGoodCtrl = ctrl end
+
+        getCam()
+
+        if not aliveNow or identitySwapped or ctrlSwapped then return end
+        tickFly(ctrl, dt)
+        if invisActive then invPhase = invPhase + dt * 12 end
+        if noFallActive then
+            local vg = ctrl.VelocityGravity
+            local gr = ctrl.IsGrounded
+            nfFalling = (gr == false) and type(vg) == "number" and vg < -18
+        end
+        tickSpeedWatchdog(ctrl)
+        tickBunnyHop(ctrl)
+        tickAntiVoid(ctrl)
+    end)
+
+    local renderTick = (function(dt)
+        if not State.running then return end
+
+        pcall(tickFakeGhost)
+    end)
+
+    local _M = {}
+    _M.CONFIG = MOV
+
+    function _M.start()
+        if started then return end
+        started = true
+
+        for k, v in pairs(MOV) do if CONFIG[k] == nil then CONFIG[k] = v end end
+
+        if Bridge.markModuleRunning then Bridge.markModuleRunning("movement", true)
+        else State.running = true end
+
+        conns[1] = RunService.Heartbeat:Connect(newcclosure(function(dt)
+            liveInputNow = isLiveInputActive()
+            pcall(tick, dt)
+            pcall(tickSender, dt)
+        end))
+        conns[2] = RunService.RenderStepped:Connect(newcclosure(function(dt)
+            pcall(renderTick, dt)
+        end))
+
+        pcall(function()
+            RunService:BindToRenderStep(LEAN_BIND, Enum.RenderPriority.Camera.Value + 2,
+                newcclosure(function(dt)
+                    if not State.running or not MOV.LeanSprint then leanCur = 0 return end
+                    local ctrl = ctrlCache
+                    if ctrl and isCtrl(ctrl) then tickLean(ctrl, dt) end
+                end))
+        end)
+        connectTPInput()
+
+        conns[5] = LP.CharacterRemoving:Connect(newcclosure(function()
+            crRemovingCount = crRemovingCount + 1
+            print("[MOV] LP.CharacterRemoving выстрелил (счётчик:", crRemovingCount, ")")
+            handleLocalDeath(ctrlCache)
+        end))
+
+        conns[6] = LP.CharacterAdded:Connect(newcclosure(function()
+            crAddedCount = crAddedCount + 1
+            print("[MOV] LP.CharacterAdded выстрелил (счётчик:", crAddedCount, ")")
+            task.spawn(attemptRecovery)
+        end))
+
+        setupInfiniteJump()
+
+        local ctrl = getCtrl()
+        getCam()
+        if ctrl then
+            print("[MOV v19.0] ✓ | hooks:", hooksSetup, "| camHooks:", camHooksSetup)
+            local la = rawget(ctrl,"_localActor")
+            if la then
+                print("[MOV]   la.Zoom:", rawget(la,"Zoom"),
+                      "| Alive:", rawget(la,"Alive"))
+            end
+        else
+            warn("[MOV v19.0] ctrl не найден — P → brm5_diag.txt")
+        end
+        print("[MOV] G=Fly | V=Strafer | Z=SpinBot | T=TP | N=NoClip | X=Speed | C=SpeedState | L=LeanLock | J=FakeAngles | U=Invisible | H=SuperJump | B=NoFall")
+    end
+
+    function _M.stop()
+        started = false
+
+        if Bridge.markModuleRunning then Bridge.markModuleRunning("movement", false) end
+
+        for _, c in pairs(conns) do pcall(function() c:Disconnect() end) end
+        conns = {}
+        if ijConn then ijConn:Disconnect(); ijConn=nil end
+        pcall(function() RunService:UnbindFromRenderStep(LEAN_BIND) end)
+        disconnectTPInput()
+
+        if tpGui then pcall(function() tpGui:Destroy() end) end
+        tpGui, tpGuiMinus, tpGuiPlus = nil, nil, nil
+        flyActive=false; wantFly=false; straferActive=false; spinBotActive=false
+        tpActive=false; MOV.NoClip=false
+
+        MOV.Speed=false
+        noFallActive=false; fakeAngMode=0; leanLockActive=false; invisActive=false
+
+        velDesyncActive=false
+        speedStateMode=0; forcedHS=nil
+        nfFalling=false; nfGroundHS=nil
+        leanCur=0
+        pcall(destroyFakeGhost)
+
+        teardownHooks(ctrlCache or liveCtrl)
+        for p, was in pairs(noClipParts) do
+            pcall(function() p.CanCollide = was end)
+        end
+        noClipParts = {}
+        teardownCamHooks()
+        do
+            local la = ctrlCache and rawget(ctrlCache, "_localActor") or nil
+            if type(la) ~= "table" then la = getLiveLA() end
+            if type(la) == "table" then pcall(function() la.Zoom = 0 end) end
+        end
+        nilCache = nil; nilCacheT = -999
+        print("[MOV] stopped")
+    end
+
+    function _M.simulateKey(kc)
+        if not kc then return end
+        onInput({ UserInputType = Enum.UserInputType.Keyboard, KeyCode = kc }, false)
+    end
+
+    local FEATURE_KEY = {
+        Speed = MOV.SpeedToggleKey, Fly = MOV.FlyToggleKey, NoClip = MOV.NoClipKey,
+        Strafer = MOV.StraferKey, Invisible = MOV.InvisibleKey,
+        VelDesync = MOV.VelocityDesyncKey, LeanLock = MOV.LeanLockKey,
+        SpinBot = MOV.SpinBotKey, NoFall = MOV.NoFallKey, ThirdPerson = MOV.ThirdPersonKey,
+    }
+    function _M.isActive(name)
+        if name == "Speed" then return MOV.Speed == true end
+        if name == "NoClip" then return MOV.NoClip == true end
+        if name == "Fly" then return flyActive end
+        if name == "Strafer" then return straferActive end
+        if name == "Invisible" then return invisActive end
+        if name == "VelDesync" then return velDesyncActive end
+        if name == "LeanLock" then return leanLockActive end
+        if name == "SpinBot" then return spinBotActive end
+        if name == "NoFall" then return noFallActive end
+        if name == "ThirdPerson" then return tpActive end
+        return false
+    end
+    function _M.setFeature(name, want)
+        want = want and true or false
+        if _M.isActive(name) ~= want then
+            _M.simulateKey(FEATURE_KEY[name])
+        end
+    end
+    function _M.getSpeedStateMode() return speedStateMode end
+    function _M.getFakeAngMode() return fakeAngMode end
+
+    function _M.setSpeedStateMode(target)
+        local order = MOV.SpeedStateOrder or { "Skydiving", "Parachuting", "Proning" }
+        local n = #order + 1
+        for _ = 1, n do
+            if speedStateMode == target % n then break end
+            _M.simulateKey(MOV.SpeedStateKey)
+        end
+    end
+    function _M.setFakeAngMode(target)
+        for _ = 1, 9 do
+            if fakeAngMode == target % 9 then break end
+            _M.simulateKey(MOV.FakeAnglesKey)
+        end
+    end
+    function _M.superJump()
+        onJumpInput({ UserInputType = Enum.UserInputType.Keyboard, KeyCode = MOV.SuperJumpKey }, false)
+    end
+
+    function _M.buildUI(ui)
+        local tab = ui.tabs and ui.tabs.Movement
+        if not tab then return end
+        local dtab = ui.tabs and ui.tabs.Debug
+        local K = Bridge.makeUiKit(ui)
+
+        local function movFeature(section, title, name, desc, noHeader)
+            local opts = {
+                Title = title, Flag = name,
+                get = function() return _M.isActive(name) end,
+                set = function(v) _M.setFeature(name, v) end,
+                Desc = desc,
+            }
+            if noHeader then opts.Header = false end
+            return K.feature(section, opts)
+        end
+
+        local L = tab:Section({ Side = "Left" })
+
+        movFeature(L, "Speed", "Speed", "overrides ur walk n sprint speed")
+        K.slider(L, { Name = "Walk Speed", Flag = "SpeedValue",
+            Default = MOV.SpeedValue, Min = 16, Max = 120,
+            Callback = function(v) MOV.SpeedValue = v end,
+            Desc = "16 = stock. past ~40 it gets obvious" })
+        K.slider(L, { Name = "Sprint Speed", Flag = "SprintSpeed",
+            Default = MOV.SprintSpeed, Min = 16, Max = 200,
+            Callback = function(v) MOV.SprintSpeed = v end })
+        K.toggle(L, { Name = "Auto Sprint", Flag = "AutoSprint", Title = "Auto Sprint",
+            get = function() return MOV.AutoSprint end,
+            set = function(v) MOV.AutoSprint = v end,
+            Desc = "always sprint without holding shift" })
+
+        K.group(L, "Fly")
+        movFeature(L, "Fly", "Fly", "free-cam flight\nspace = up, ctrl = down", true)
+        K.slider(L, { Name = "Fly Speed", Flag = "FlySpeed",
+            Default = MOV.FlySpeed, Min = 8, Max = 200,
+            Callback = function(v) MOV.FlySpeed = v end })
+        K.toggle(L, { Name = "TP Bypass", Flag = "FlyTPBypass", Title = "Fly TP Bypass",
+            get = function() return MOV.FlyTPBypass ~= false end,
+            set = function(v) MOV.FlyTPBypass = v end,
+            Desc = "keeps the server position in sync so u dont get\nrubber-banded or kicked mid flight" })
+
+        K.group(L, "No Clip")
+        movFeature(L, "No Clip", "NoClip", "walk thru walls n objects", true)
+
+        K.group(L, "Jump")
+        K.toggle(L, { Name = "Infinite Jump", Flag = "InfJump", Title = "Infinite Jump",
+            get = function() return MOV.InfiniteJump end,
+            set = function(v) MOV.InfiniteJump = v end })
+        K.toggle(L, { Name = "Bunny Hop", Flag = "Bhop", Title = "Bunny Hop",
+            get = function() return MOV.BunnyHop end,
+            set = function(v) MOV.BunnyHop = v end,
+            Desc = "auto-jumps while u hold space" })
+        K.slider(L, { Name = "Super Jump Power", Flag = "SJVel",
+            Default = MOV.SuperJumpVel, Min = 20, Max = 200,
+            Callback = function(v) MOV.SuperJumpVel = v end })
+        if ui.keybind then
+            ui.keybind(L, { Name = "Super Jump Keybind",
+                Flag = (ui.flag or tostring)("SuperJump_KB"),
+                Toggle = function()
+                    _M.superJump()
+                    K.notify("Super Jump", "Fired")
+                end })
+        end
+
+        K.group(L, "No Fall")
+        movFeature(L, "No Fall", "NoFall", "spoofs height state so u take no fall dmg", true)
+
+        K.group(L, "Strafer")
+        movFeature(L, "Strafer", "Strafer", "free air-strafe, turn without input", true)
+
+        local R = tab:Section({ Side = "Right" })
+
+        movFeature(R, "Third Person", "ThirdPerson", "forces the camera out to third person")
+        K.slider(R, { Name = "Camera Distance", Flag = "TPDist",
+            Default = MOV.ThirdPersonDist, Min = 5, Max = 40,
+            Callback = function(v) MOV.ThirdPersonDist = v end,
+            Desc = "scroll wheel also works in game" })
+
+        K.group(R, "Spin Bot")
+        movFeature(R, "Spin Bot", "SpinBot", "spins ur model for everyone else", true)
+        K.slider(R, { Name = "Spin Speed", Flag = "SpinRPS",
+            Default = MOV.SpinBotRPS, Min = 1, Max = 30, Suffix = " rps",
+            Callback = function(v) MOV.SpinBotRPS = v end })
+
+        K.group(R, "Velocity Desync")
+        movFeature(R, "Velocity Desync", "VelDesync", "jitters replicated velocity to break their prediction", true)
+        K.slider(R, { Name = "Amplitude", Flag = "VelAmp",
+            Default = math.floor((MOV.VelocityDesyncAmp or 1) * 10), Min = 5, Max = 100,
+            Callback = function(v) MOV.VelocityDesyncAmp = v / 10 end,
+            Desc = "10 = 1 stud. higher = harder to hit but more visible" })
+
+        K.group(R, "Lean")
+        movFeature(R, "Lean Lock", "LeanLock", "locks ur lean at a fixed angle", true)
+        K.slider(R, { Name = "Lean Value", Flag = "LeanVal",
+            Default = math.floor((MOV.LeanLockValue or 0) * 100) + 100, Min = 0, Max = 200,
+            Callback = function(v) MOV.LeanLockValue = (v - 100) / 100 end,
+            Desc = "100 = straight, 0 = full left, 200 = full right" })
+        K.toggle(R, { Name = "Lean on Sprint", Flag = "LeanSprint", Title = "Lean on Sprint",
+            get = function() return MOV.LeanSprint end,
+            set = function(v) MOV.LeanSprint = v end })
+        K.slider(R, { Name = "Sprint Lean Angle", Flag = "LeanAngle",
+            Default = MOV.LeanAngle, Min = 0, Max = 20, Suffix = "°",
+            Callback = function(v) MOV.LeanAngle = v end })
+
+        K.group(R, "Speed State")
+        local order = MOV.SpeedStateOrder or { "Skydiving", "Parachuting", "Proning" }
+        local ssOpts = { "Off" }
+        for _, n in ipairs(order) do ssOpts[#ssOpts + 1] = n end
+        K.dropdown(R, { Name = "State", Flag = "SpeedState",
+            Options = ssOpts,
+            Default = ssOpts[(_M.getSpeedStateMode() or 0) + 1] or "Off",
+            Callback = function(n)
+                local idx = table.find(ssOpts, n)
+                if idx then _M.setSpeedStateMode(idx - 1) end
+            end,
+            Desc = "movement-state multiplier\nSkydiving is the fastest one" })
+        if ui.keybind then
+            ui.keybind(R, { Name = "Cycle Keybind",
+                Flag = (ui.flag or tostring)("SSCycle_KB"),
+                Toggle = function()
+                    _M.simulateKey(MOV.SpeedStateKey)
+                    K.notify("Speed State", "Cycled")
+                end })
+        end
+
+        local FA = tab:Section({ Side = "Left" })
+        FA:Header({ Name = "Fake Angles" })
+        local FA_MODES = { "Instant", "Spin", "Random", "Backwards", "Jitter", "Twitch" }
+        local faGuard, faTog = false, nil
+        local function faCommit(on)
+            if on then
+                if _M.getFakeAngMode() == 0 then _M.setFakeAngMode(1) end
+            else
+                _M.setFakeAngMode(0)
+            end
+            K.notify("Fake Angles", on and "Enabled" or "Disabled")
+            faGuard = true
+            if faTog then pcall(function() faTog:UpdateState(on) end) end
+            faGuard = false
+        end
+        faTog = FA:Toggle({ Name = "Enabled", Default = _M.getFakeAngMode() ~= 0,
+            Callback = function(v)
+                if faGuard then return end
+                faCommit(v and true or false)
+            end }, (ui.flag or tostring)("FAEnabled"))
+        FA:SubLabel({ Text = "spoofs the body angles others see\ndoesnt touch ur own aim or shots" })
+        if ui.keybind then
+            ui.keybind(FA, { Name = "Keybind", Flag = (ui.flag or tostring)("FA_KB"),
+                Toggle = function() faCommit(_M.getFakeAngMode() == 0) end })
+        end
+        K.dropdown(FA, { Name = "Mode", Flag = "FAMode",
+            Options = FA_MODES,
+            Default = FA_MODES[math.max(1, _M.getFakeAngMode())] or "Instant",
+            Callback = function(n)
+                local idx = table.find(FA_MODES, n)
+                if idx then
+                    _M.setFakeAngMode(idx)
+                    faGuard = true
+                    if faTog then pcall(function() faTog:UpdateState(true) end) end
+                    faGuard = false
+                end
+            end })
+        K.slider(FA, { Name = "Yaw Jitter", Flag = "FAJitter",
+            Default = math.floor((MOV.FakeAnglesJitter or 2.8) * 100), Min = 0, Max = 628,
+            Callback = function(v) MOV.FakeAnglesJitter = v / 100 end,
+            Desc = "how far the body snaps each packet" })
+        K.slider(FA, { Name = "Pitch Amount", Flag = "FAPitch",
+            Default = math.floor((MOV.FakeAnglesPitchAmp or 1.4) * 100), Min = 0, Max = 314,
+            Callback = function(v) MOV.FakeAnglesPitchAmp = v / 100 end })
+        K.slider(FA, { Name = "Spin Step", Flag = "FASpin",
+            Default = math.floor((MOV.FakeAnglesSpinStep or 0.9) * 100), Min = 10, Max = 314,
+            Callback = function(v) MOV.FakeAnglesSpinStep = v / 100 end,
+            Desc = "only used by Spin mode" })
+
+        K.group(FA, "Ghost")
+        K.toggle(FA, { Name = "Show Ghost", Flag = "FAGhost", Title = "Ghost Model",
+            get = function() return MOV.FakeAnglesGhost end,
+            set = function(v) MOV.FakeAnglesGhost = v end,
+            Desc = "draws where others think u are\nonly u can see it" })
+        K.toggle(FA, { Name = "Hide in First Person", Flag = "FAGhostFP",
+            Title = "Ghost FP Hide",
+            get = function() return MOV.FakeAnglesGhostFirstPersonHide ~= false end,
+            set = function(v) MOV.FakeAnglesGhostFirstPersonHide = v end,
+            Desc = "off = ghost stays visible even in first person" })
+
+        local function faRestyle()
+            local fn = State.movRestyleFakeGhost
+            if type(fn) == "function" then pcall(fn) end
+        end
+        K.color(FA, { Name = "Ghost Color", Flag = "FAGhostCol",
+            Default = MOV.FakeAnglesGhostColor,
+            Callback = function(c) MOV.FakeAnglesGhostColor = c; faRestyle() end,
+            Desc = "body tint of the ghost clone\napplies instantly" })
+        K.color(FA, { Name = "Ghost Outline", Flag = "FAGhostOut",
+            Default = MOV.FakeAnglesGhostOutline or Color3.fromRGB(180, 235, 255),
+            Callback = function(c) MOV.FakeAnglesGhostOutline = c; faRestyle() end,
+            Desc = "silhouette edge color" })
+        K.slider(FA, { Name = "Ghost Transparency", Flag = "FAGhostTr",
+            Default = math.floor((MOV.FakeAnglesGhostTransparency or 0.5) * 100),
+            Min = 0, Max = 100, Suffix = "%",
+            Callback = function(v)
+                MOV.FakeAnglesGhostTransparency = v / 100
+                faRestyle()
+            end })
+
+        if dtab then
+            local D = dtab:Section({ Side = "Right" })
+            D:Header({ Name = "Movement" })
+            K.slider(D, { Name = "Ghost Update Rate", Flag = "DbgFAHz",
+                Default = MOV.FakeAnglesSendHz or 22, Min = 5, Max = 60, Suffix = " Hz",
+                Callback = function(v) MOV.FakeAnglesSendHz = v end })
+            K.slider(D, { Name = "State Hold", Flag = "DbgFAHold",
+                Default = MOV.FakeAnglesStateHold or 8, Min = 1, Max = 30,
+                Callback = function(v) MOV.FakeAnglesStateHold = v end,
+                Desc = "packets per spoofed state" })
+            K.toggle(D, { Name = "Clamp Safe Angles", Flag = "DbgFAClamp",
+                Title = "Clamp Safe Angles",
+                get = function() return MOV.FakeAnglesClampSafe end,
+                set = function(v) MOV.FakeAnglesClampSafe = v end })
+            K.toggle(D, { Name = "Suppress Game Packet", Flag = "DbgFASuppress",
+                Title = "Suppress Game Packet",
+                get = function() return MOV.FakeAnglesSuppressGame end,
+                set = function(v) MOV.FakeAnglesSuppressGame = v end })
+
+            K.group(D, "Logging")
+            D:SubLabel({ Text = "console spam, keep off for normal play" })
+            K.toggle(D, { Name = "Fake Angles Diag", Flag = "DbgFADiag",
+                Title = "Fake Angles Diagnostics",
+                get = function() return MOV.FakeAnglesDiag end,
+                set = function(v) MOV.FakeAnglesDiag = v end })
+            K.slider(D, { Name = "Diag Packet Count", Flag = "DbgFADiagN",
+                Default = MOV.FakeAnglesDiagCount or 20, Min = 5, Max = 100,
+                Callback = function(v) MOV.FakeAnglesDiagCount = v end })
+            K.button(D, { Name = "Run Diagnostic", Flag = "DbgRunDiag",
+                Title = "Movement",
+                Callback = function()
+                    task.spawn(runDiagnostic)
+                    return "running, check console"
+                end })
+        end
+
+        K.ready()
+    end
+
+    do
+        local g = (type(getgenv) == "function" and getgenv()) or _G
+        local prev = g.BRM5_MOV_MODULE
+        if type(prev) == "table" and type(prev.stop) == "function" and prev ~= _M then
+            pcall(prev.stop)
+        end
+        g.BRM5_MOV_MODULE = _M
+    end
+    if Bridge.registerModule then Bridge.registerModule("movement", _M) end
+
+    return _M
+end
